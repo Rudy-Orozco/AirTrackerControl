@@ -1,7 +1,7 @@
 /**
  * Runs in the page before it loads (desktop app only). Gives the page a small,
- * safe bridge for page zoom, which a web page can't otherwise control:
- * window.desktop.zoom(step), .zoomFactor() and .onZoom(callback).
+ * safe bridge for page zoom and quitting, which a web page can't otherwise do:
+ * window.desktop.zoom(step), .zoomFactor(), .onZoom(callback) and .quit().
  * (CommonJS: Electron's sandboxed preload scripts can't be ES modules.)
  */
 const { contextBridge, ipcRenderer } = require('electron')
@@ -16,4 +16,6 @@ contextBridge.exposeInMainWorld('desktop', {
     ipcRenderer.on('zoom', listener)
     return () => ipcRenderer.removeListener('zoom', listener)
   },
+  /** Shuts the app down. */
+  quit: () => ipcRenderer.invoke('quit'),
 })

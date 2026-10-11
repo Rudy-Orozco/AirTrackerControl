@@ -36,7 +36,7 @@ import { modelGeometry } from '../aircraft/aircraftModels'
 import { aircraftSize } from '../aircraft/aircraftShapes'
 import type { Flight } from '../tracking/flights'
 import type { GroundTrack } from '../tracking/groundTracker'
-import type { AssistPath } from '../tracking/runwayAssist'
+import type { AssistPath, RunwayGuide } from '../tracking/runwayAssist'
 import type { AirportLayout } from '../diorama/diorama'
 import { buildAirportModel, buildMapRunways } from './airportModel'
 import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, type Map3DTrafficStyle } from '../config/config'
@@ -254,6 +254,9 @@ export class Map3D {
   private groundAssistPaths: ((g: GroundTrack) => AssistPath | null) | null = null
   /** Takeoff paths of departures still on the ground (MAP.showAssistPaths). */
   private readonly groundPathLines = new Map<GroundTrack, Line>()
+  private runwayGuides: ((now: number) => RunwayGuide[]) | null = null
+  /** The localizers, glide paths and climb-outs of the runways in use (MAP.showRunwayGuides), by RunwayGuide.id. */
+  private readonly guideLines = new Map<string, GuideLines>()
   /** Where each aircraft was drawn on screen last frame, for clicking on one. */
   private hits: { hex: string; x: number; y: number }[] = []
   private readonly crafts = new Map<Track, Craft>()
@@ -473,6 +476,10 @@ export class Map3D {
       this.followFocus(now, focus?.hex ?? null, focusAt)
       this.controls.update(dt)
     }
+    // Labels are placed by projecting through the camera before it's rendered (which would
+    // update its view): without this, they'd be a frame behind it, swimming and shaking off
+    // their aircraft wherever the camera moves fast (riding along, turning, the buffet).
+    this.camera.updateMatrixWorld()
     // Riding along, the followed aircraft isn't marked; from the cockpit, it isn't drawn at all.
     const ridingWith = (this.riding?.blend ?? 0) > 0.5 ? focus?.hex : null
     const inside = ridingWith && (this.riding?.view ?? 0) < 0.5 ? ridingWith : null
@@ -595,6 +602,7 @@ export class Map3D {
     const flying = new Set([...seen].filter((t) => t.landedAt === null).map((t) => t.info.hex))
     const onGround = this.updateGroundTraffic(groundList, flying, inside)
     this.updateGroundAssistPaths(allGround)
+    this.updateRunwayGuides()
     const focusDrawn = !!focus && (flying.has(focus.hex) || onGround.has(focus.hex))
     this.updateFocusMesh(focus, focusAt, focusDrawn, trueScale, inside !== null)
     this.updateFocusRoute(focus, focusLocal)
@@ -668,6 +676,7 @@ export class Map3D {
       line.geometry.dispose()
       ;(line.material as LineDashedMaterial).dispose()
     }
+    for (const lines of this.guideLines.values()) disposeTree(lines.group)
     this.controls.dispose()
     this.ground.material.map?.dispose()
     this.ground.material.alphaMap?.dispose()
@@ -894,6 +903,59 @@ export class Map3D {
       line.geometry.dispose()
       ;(line.material as LineDashedMaterial).dispose()
       this.groundPathLines.delete(g)
+    }
+  }
+
+  /** Where the runway guides come from (the tracker's runway assist), for MAP.showRunwayGuides. */
+  setRunwayGuides(guides: (now: number) => RunwayGuide[]) {
+    this.runwayGuides = guides
+  }
+
+  /**
+   * What the runway assist guides aircraft along on the runways in use
+   * (MAP.showRunwayGuides): on final, the localizer dashed along the ground with
+   * the edges of the area either side that still counts, the glide path in the
+   * air with a bar across it every nautical mile from touchdown, a wider one at
+   * the gate where arrivals are held to it (on a post down to the ground), and
+   * one at the touchdown aiming point; taking off, the climb-out along the
+   * ground. In the arrival or departure color, as bold as it's in use.
+   */
+  private updateRunwayGuides() {
+    const guides = MAP.showRunwayGuides && this.runwayGuides ? this.runwayGuides(performance.now()) : []
+    const seen = new Set<string>()
+    for (const g of guides) {
+      seen.add(g.id)
+      let lines = this.guideLines.get(g.id)
+      if (!lines) {
+        lines = guideLines()
+        this.world.add(lines.group)
+        this.guideLines.set(g.id, lines)
+      }
+      const color = new Color((g.landing ? MAP3D.traffic.arrival : MAP3D.traffic.departure).color)
+      const field = AIRPORT_PRESET.elevationFt
+      setPathLine(lines.centerline, { points: g.centerline, alts: g.centerline.map(() => field) }, null, color, 0.55 * g.strength)
+      setPathLine(lines.glide, g.glide, null, color, 0.45 * g.strength)
+      const at = (p: LatLon, alt: number) => {
+        const l = local(p)
+        return [l.x, l.y, heightOf(alt)]
+      }
+      const edges = g.edges.flatMap((edge) => edge.slice(1).flatMap((p, i) => [...at(edge[i], field), ...at(p, field)]))
+      setSegments(lines.edges, edges, color, 0.2 * g.strength)
+      const bars = g.bars.flatMap((b) => {
+        // The touchdown aiming point is on the runway; the rest across the glide path, the gate on a post.
+        const alt = b.kind === 'touchdown' ? field : b.alt
+        const bar = [...at(b.from, alt), ...at(b.to, alt)]
+        if (b.kind !== 'gate') return bar
+        const mid = { lat: (b.from.lat + b.to.lat) / 2, lon: (b.from.lon + b.to.lon) / 2 }
+        return [...bar, ...at(mid, field), ...at(mid, alt)]
+      })
+      setSegments(lines.bars, bars, color, 0.5 * g.strength)
+    }
+    for (const [id, lines] of this.guideLines) {
+      if (seen.has(id)) continue
+      this.world.remove(lines.group)
+      disposeTree(lines.group)
+      this.guideLines.delete(id)
     }
   }
 
@@ -1974,6 +2036,45 @@ const CRUISE_FT = 30_000
 const CRUISE_RAMP_NM = 120
 
 /** Points a dashed line along `path` (at altitude), or hides it when null or empty. `start` overrides the first point. */
+/** One runway guide's lines in the 3D map (see Map3D.updateRunwayGuides). */
+interface GuideLines {
+  group: Group
+  centerline: Line
+  glide: Line
+  edges: LineSegments
+  bars: LineSegments
+}
+
+function guideLines(): GuideLines {
+  const material = () => new LineBasicMaterial({ transparent: true, depthWrite: false })
+  const centerline = new Line(new BufferGeometry(), new LineDashedMaterial({ transparent: true, depthWrite: false, dashSize: 0.25, gapSize: 0.18 }))
+  const glide = new Line(new BufferGeometry(), material())
+  const edges = new LineSegments(new BufferGeometry(), material())
+  const bars = new LineSegments(new BufferGeometry(), material())
+  const group = new Group()
+  for (const line of [centerline, glide, edges, bars]) {
+    line.frustumCulled = false
+    group.add(line)
+  }
+  return { group, centerline, glide, edges, bars }
+}
+
+/** Sets a LineSegments' points (x, y, z for each end of each segment), color and opacity. */
+function setSegments(lines: LineSegments, positions: number[], color: Color, opacity: number) {
+  lines.visible = positions.length > 0
+  if (!lines.visible) return
+  const attr = lines.geometry.getAttribute('position') as BufferAttribute | undefined
+  if (attr?.count === positions.length / 3) {
+    attr.copyArray(positions)
+    attr.needsUpdate = true
+  } else {
+    lines.geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+  }
+  const material = lines.material as LineBasicMaterial
+  material.color.copy(color)
+  material.opacity = opacity
+}
+
 function setPathLine(
   line: Line,
   path: { points: LatLon[]; alts: (number | null)[] } | null,

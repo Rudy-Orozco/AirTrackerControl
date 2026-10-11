@@ -8,6 +8,8 @@ export interface DesktopBridge {
   zoomFactor(): Promise<number>
   /** Calls back with the zoom factor whenever it changes; returns a function to stop. */
   onZoom(callback: (factor: number) => void): () => void
+  /** Shuts the app down. */
+  quit(): Promise<void>
 }
 
 export const desktop: DesktopBridge | undefined = (window as Window & { desktop?: DesktopBridge }).desktop

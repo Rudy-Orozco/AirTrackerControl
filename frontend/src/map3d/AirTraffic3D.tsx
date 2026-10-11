@@ -52,6 +52,7 @@ export function AirTraffic3D({
       (t) => tracker.assistPath(t),
       (g) => tracker.groundAssistPath(g),
     )
+    map.setRunwayGuides((now) => tracker.runwayGuides(now))
     redrawGround()
 
     const resize = () => {

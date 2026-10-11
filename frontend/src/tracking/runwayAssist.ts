@@ -12,7 +12,10 @@ import type { LatLon, Track } from './tracker'
  * departure end, climbing). The best score sets how strongly the drawn path
  * is pulled onto the runway's own geometry: sideways onto the centerline, the
  * nose onto the runway heading with the wings level, and on final, down the
- * glide path to the touchdown zone. The strength eases after the score, so a
+ * glide path to the touchdown zone. Its height is its reports' until it's
+ * low on final, then eased onto the glide path, and kept from going below it
+ * (see glideWeight): reported altitudes near the ground are rough, and it has
+ * to meet the runway's surface at touchdown. The strength eases after the score, so a
  * go-around (climbing away), a sidestep to another runway or a turn off
  * lets go smoothly, and a just-captured approach settles on gently. Only the
  * drawn path changes: the tracker still follows the reports underneath.
@@ -30,15 +33,20 @@ export class RunwayAssist {
    * after moving across from a parallel runway.
    */
   private readonly state = new Map<Track, { k: number; end: RunwayEnd | null; landing: boolean; slide: number }>()
+  /** How strongly each runway direction's guides are shown (see guides), eased, and when they were last worked out. */
+  private readonly guideShown = new Map<string, number>()
+  private guidesAt: number | null = null
 
   constructor(layout: AirportLayout) {
     // A runway may come in several pieces sharing a name: its ends are its two furthest points.
+    // Unnamed pieces each stand alone: they're not all one runway.
     const byRef = new Map<string, Vec[]>()
-    for (const r of layout.runways) {
-      const points = byRef.get(r.ref) ?? []
+    layout.runways.forEach((r, i) => {
+      const ref = r.ref || `unnamed ${i}`
+      const points = byRef.get(ref) ?? []
       points.push(...r.line.map(([lon, lat]) => this.toMeters({ lat, lon })))
-      byRef.set(r.ref, points)
-    }
+      byRef.set(ref, points)
+    })
     this.ends = [...byRef.values()].flatMap((points) => {
       let [a, b] = [points[0], points[0]]
       for (const p of points) for (const q of points) if (dist(p, q) > dist(a, b)) [a, b] = [p, q]
@@ -88,8 +96,23 @@ export class RunwayAssist {
     // Wings level once established.
     t.turning *= 1 - k
     if (target.glideFt !== null && t.altitude !== null) {
+      // Its reported height, dragged onto the glide path as it gets low on final, and kept
+      // from going below it just as gradually (it may well be below it further out, flying
+      // level to intercept it from below, as on an ILS: lifting it then would pop it up).
+      // Where it settles onto it, rounded off, less and less so nearer the runway.
       const glideAlt = AIRPORT_PRESET.elevationFt + target.glideFt
-      t.altitude += (glideAlt - t.altitude) * k * target.glideWeight
+      const w = target.glideWeight
+      const dragged = t.altitude + (glideAlt - t.altitude) * w
+      const round = SETTLE_FT * (1 - w)
+      const h = round > 0 ? Math.min(Math.max(0.5 + (dragged - glideAlt) / (2 * round), 0), 1) : dragged >= glideAlt ? 1 : 0
+      const floored = glideAlt + (dragged - glideAlt) * h + round * h * (1 - h)
+      const held = dragged + (floored - dragged) * w
+      t.altitude += (held - t.altitude) * k
+      // Descending as the glide path does, as fast as it's moving along it (rounding out in the
+      // flare): its nose follows, and the ground view carries on from it at touchdown.
+      const cos = Math.cos((t.pos.lat * Math.PI) / 180)
+      const speed = Math.max((t.vel.lon * cos * e.dir.x + t.vel.lat * e.dir.y) * M_PER_DEG, 0)
+      t.altSpeed += (glideSlope(along) * speed - t.altSpeed) * k * w
     }
   }
 
@@ -107,16 +130,8 @@ export class RunwayAssist {
     const e = state.end
     const along = this.along(e, t.pos)
     if (state.landing && !takingOff) {
-      // From abeam the aircraft down to the touchdown zone, then along the runway.
-      const start = Math.min(along, TOUCHDOWN_M)
-      const points: LatLon[] = []
-      const alts: number[] = []
-      for (let i = 0; i <= PATH_POINTS; i++) {
-        const s = start + ((e.length - start) * i) / PATH_POINTS
-        points.push(this.at(e, s))
-        alts.push(AIRPORT_PRESET.elevationFt + (Math.max(TOUCHDOWN_M - s, 0) * GLIDE_TAN) / M_PER_FT)
-      }
-      return { landing: true, points, alts, strength: state.k }
+      // From abeam the aircraft down the glide path and through the flare to touchdown, then along the runway.
+      return { landing: true, ...this.glideLine(e, Math.min(along, TOUCHDOWN_AT_M), e.length), strength: state.k }
     }
     // Climbing out at its reported gradient (or a typical one); still rolling, from where it'll lift off.
     const fps = (t.info.groundSpeed ?? 0) * FPS_PER_KT
@@ -125,6 +140,91 @@ export class RunwayAssist {
     const rolling = t.takeoff && t.takeoff.liftedAt === null ? this.along(e, t.takeoff.liftoff) : null
     const from = rolling === null ? Math.max(t.altitude, AIRPORT_PRESET.elevationFt) : AIRPORT_PRESET.elevationFt
     return { landing: false, ...this.climbOut(e, along, from, rolling, gradient), strength: takingOff ? Math.max(state.k, 1) : state.k }
+  }
+
+  /**
+   * What the assist guides aircraft along, for each runway direction it's
+   * guiding any onto (or did lately: they fade in and out with its use). Landing:
+   * the localizer (the extended centerline, and how far either side of it still
+   * counts), the glide path with a bar every nautical mile from touchdown, the
+   * gate where it starts holding them to it (GLIDE_FROM_FT) and the touchdown
+   * aiming point. Taking off: the climb-out (centerline and edges).
+   */
+  guides(now: number): RunwayGuide[] {
+    const dt = this.guidesAt === null ? 0 : Math.max(now - this.guidesAt, 0)
+    this.guidesAt = now
+    const using = new Map<string, number>()
+    for (const [t, s] of this.state) {
+      if (!s.end) continue
+      // Still finishing its takeoff, it's on its climb-out however much it's being pulled (see path).
+      const k = (t.takeoff && !s.landing ? 1 : s.k) * t.opacity
+      if (k < MIN_SHOWN) continue
+      const id = `${this.ends.indexOf(s.end)}${s.landing ? 'L' : 'D'}`
+      using.set(id, Math.max(using.get(id) ?? 0, k))
+    }
+    const ease = 1 - Math.exp(-dt / GUIDE_FADE_MS)
+    for (const id of new Set([...this.guideShown.keys(), ...using.keys()])) {
+      const shown = (this.guideShown.get(id) ?? 0) + ((using.get(id) ?? 0) - (this.guideShown.get(id) ?? 0)) * ease
+      if (shown < MIN_SHOWN && !using.has(id)) this.guideShown.delete(id)
+      else this.guideShown.set(id, shown)
+    }
+    return [...this.guideShown].map(([id, strength]) => {
+      const e = this.ends[Number(id.slice(0, -1))]
+      return id.endsWith('L') ? this.landingGuide(id, e, strength) : this.climbOutGuide(id, e, strength)
+    })
+  }
+
+  private landingGuide(id: string, e: RunwayEnd, strength: number): RunwayGuide {
+    const glide = (s: number) => AIRPORT_PRESET.elevationFt + glideHeight(s)
+    const width = (s: number) => CENTERLINE_M + Math.max(TOUCHDOWN_M - s, 0) * CONE_SLOPE
+    const bar = (s: number, half: number, kind: GuideBar['kind']): GuideBar => ({
+      from: this.fromMeters(this.offLine(e, s, -half)),
+      to: this.fromMeters(this.offLine(e, s, half)),
+      alt: glide(s),
+      kind,
+    })
+    const bars: GuideBar[] = []
+    for (let s = TOUCHDOWN_M - M_PER_NM; s > -FINAL_M; s -= M_PER_NM) bars.push(bar(s, MILE_BAR_M, 'mile'))
+    bars.push(bar(TOUCHDOWN_M - (GLIDE_FROM_FT * M_PER_FT) / GLIDE_TAN, GATE_BAR_M, 'gate'))
+    bars.push(bar(TOUCHDOWN_M, TOUCHDOWN_BAR_M, 'touchdown'))
+    return {
+      id,
+      landing: true,
+      strength,
+      centerline: [this.at(e, -FINAL_M), this.at(e, 0)],
+      edges: [-1, 1].map((side) => [-FINAL_M, 0].map((s) => this.fromMeters(this.offLine(e, s, side * width(s))))) as [LatLon[], LatLon[]],
+      glide: this.glideLine(e, -FINAL_M, TOUCHDOWN_AT_M),
+      bars,
+    }
+  }
+
+  /**
+   * Points down runway `e`'s glide path from `from` to `to` (meters along), with
+   * their heights (feet): straight, but closely spaced through the flare, so it
+   * rounds out smoothly.
+   */
+  private glideLine(e: RunwayEnd, from: number, to: number) {
+    const stations = Array.from({ length: PATH_POINTS + 1 }, (_, i) => from + ((to - from) * i) / PATH_POINTS)
+    for (let i = 0; i <= FLARE_POINTS; i++) {
+      const s = FLARE_START_M + ((TOUCHDOWN_AT_M - FLARE_START_M) * i) / FLARE_POINTS
+      if (s > from && s < to) stations.push(s)
+    }
+    stations.sort((a, b) => a - b)
+    return { points: stations.map((s) => this.at(e, s)), alts: stations.map((s) => AIRPORT_PRESET.elevationFt + glideHeight(s)) }
+  }
+
+  private climbOutGuide(id: string, e: RunwayEnd, strength: number): RunwayGuide {
+    const width = (s: number) => CENTERLINE_M + Math.max(s - e.length, 0) * CONE_SLOPE
+    const end = e.length + CLIMB_OUT_M
+    return {
+      id,
+      landing: false,
+      strength,
+      centerline: [this.at(e, e.length * LIFTOFF_FRACTION), this.at(e, end)],
+      edges: [-1, 1].map((side) => [e.length, end].map((s) => this.fromMeters(this.offLine(e, s, side * width(s))))) as [LatLon[], LatLon[]],
+      glide: null,
+      bars: [],
+    }
   }
 
   /**
@@ -259,7 +359,7 @@ export class RunwayAssist {
     // and not just lifted off (low over the runway, it'd look like it's landing).
     if (along > -FINAL_M && along < e.length && t.liftoffAt === null) {
       const before = Math.max(TOUCHDOWN_M - along, 0)
-      const glideFt = (before * GLIDE_TAN) / M_PER_FT
+      const glideFt = glideHeight(along)
       const cone = CENTERLINE_M + before * CONE_SLOPE
       const score =
         lined *
@@ -267,7 +367,7 @@ export class RunwayAssist {
         fade(along < 0 ? -along : 0, FINAL_FULL_M, FINAL_M) *
         fade(Math.abs(height - glideFt), 400, 900) *
         fade(vs, 200, 700)
-      if (score > best.score) best = { score, end: e, along, glideFt, glideWeight: 1, offCenter: across / cone }
+      if (score > best.score) best = { score, end: e, along, glideFt, glideWeight: glideWeight(glideFt), offCenter: across / cone }
     }
     // Climbing out: over the runway or past its far end, low, climbing (or just lifted off).
     if (along > 0 && along < e.length + CLIMB_OUT_M) {
@@ -290,7 +390,8 @@ export class RunwayAssist {
       if (along < -FINAL_FULL_M || along > e.length || across > CENTERLINE_M * 2) continue
       if (Math.abs(angleTo(t.heading, e.bearing)) > 30) continue
       const score = 1 - across / (CENTERLINE_M * 2)
-      if (score > best.score) best = { score, end: e, along, glideFt: 0, glideWeight: 1, offCenter: across / (CENTERLINE_M * 2) }
+      // Still finishing its flare, if it's reported down before it's drawn touching down.
+      if (score > best.score) best = { score, end: e, along, glideFt: glideHeight(along), glideWeight: 1, offCenter: across / (CENTERLINE_M * 2) }
     }
     return best
   }
@@ -313,6 +414,31 @@ export interface AssistPath {
   alts: number[]
   /** How strongly the assist is engaged (0 to 1), for how boldly to draw it. */
   strength: number
+}
+
+/** What the assist guides aircraft along on one runway direction, for drawing (see RunwayAssist.guides). */
+export interface RunwayGuide {
+  /** Stays the same for the same runway direction, landing or taking off. */
+  id: string
+  landing: boolean
+  /** How boldly to draw it (0 to 1): as strongly as it's guiding anyone, eased. */
+  strength: number
+  /** Down the extended centerline, on the ground: the localizer (landing), or the climb-out. */
+  centerline: LatLon[]
+  /** How far either side of it still counts, on the ground. */
+  edges: [LatLon[], LatLon[]]
+  /** Landing: the glide path, from furthest out to the touchdown aiming point, with its heights (feet). */
+  glide: { points: LatLon[]; alts: number[] } | null
+  /** Across the centerline, each with the glide path's height there (feet). */
+  bars: GuideBar[]
+}
+
+/** A bar across a landing guide: every nautical mile from touchdown, the gate where it's held to the glide path, the touchdown aiming point. */
+export interface GuideBar {
+  from: LatLon
+  to: LatLon
+  alt: number
+  kind: 'mile' | 'gate' | 'touchdown'
 }
 
 interface Vec {
@@ -367,6 +493,35 @@ function angleTo(from: number, to: number) {
   return ((((to - from) % 360) + 540) % 360) - 180
 }
 
+/**
+ * Height (feet above the field) of the glide path `s` meters past the
+ * threshold: 3° down toward the aiming point until it's FLARE_FT up, then
+ * rounding out (the flare), descending less and less steeply the further it
+ * goes, to touch down at a fraction of the rate (FLARE_SINK) at TOUCHDOWN_AT_M.
+ */
+function glideHeight(s: number) {
+  if (s <= FLARE_START_M) return ((TOUCHDOWN_M - s) * GLIDE_TAN) / M_PER_FT
+  if (s >= TOUCHDOWN_AT_M) return 0
+  return Math.max((FLARE_H_M + FLARE_BELOW_M) * Math.exp(-(s - FLARE_START_M) / FLARE_TAU_M) - FLARE_BELOW_M, 0) / M_PER_FT
+}
+
+/** How steeply (feet per meter along, negative: descending) the glide path descends `s` meters past the threshold. */
+function glideSlope(s: number) {
+  if (s <= FLARE_START_M) return -GLIDE_TAN / M_PER_FT
+  if (s >= TOUCHDOWN_AT_M) return 0
+  return -((FLARE_H_M + FLARE_BELOW_M) / FLARE_TAU_M) * Math.exp(-(s - FLARE_START_M) / FLARE_TAU_M) / M_PER_FT
+}
+
+/**
+ * How strongly (0 to 1) an aircraft on final is held to the glide path, rather
+ * than its reported altitude, where the glide path is `glideFt` above the
+ * field: not at all until it's low on final, then more and more strongly,
+ * gently at first, until it's fully on it just before the threshold.
+ */
+function glideWeight(glideFt: number) {
+  return fade(glideFt, GLIDE_FULL_FT, GLIDE_FROM_FT)
+}
+
 /** 1 up to `full`, easing to 0 at `none` (and beyond). */
 function fade(value: number, full: number, none: number) {
   if (value <= full) return 1
@@ -380,6 +535,32 @@ const M_PER_FT = 0.3048
 /** The standard 3° glide path, aiming about 300 m past the threshold. */
 const GLIDE_TAN = Math.tan((3 * Math.PI) / 180)
 const TOUCHDOWN_M = 300
+/**
+ * The flare: from this high (feet) over the runway, the glide path rounds out,
+ * easing its descent smoothly (exponentially, with distance) to touch down at
+ * this fraction of the approach's descent rate (about 150 ft a minute), around
+ * 500 m past the threshold, rather than flying into the runway at 3°.
+ */
+const FLARE_FT = 40
+const FLARE_SINK = 0.2
+const FLARE_H_M = FLARE_FT * M_PER_FT
+const FLARE_START_M = TOUCHDOWN_M - FLARE_H_M / GLIDE_TAN
+/** It eases toward a line this far (meters) below the runway, so it reaches it still sinking a little, at TOUCHDOWN_AT_M. */
+const FLARE_BELOW_M = (FLARE_H_M * FLARE_SINK) / (1 - FLARE_SINK)
+const FLARE_TAU_M = (FLARE_H_M + FLARE_BELOW_M) / GLIDE_TAN
+const TOUCHDOWN_AT_M = FLARE_START_M + FLARE_TAU_M * Math.log((FLARE_H_M + FLARE_BELOW_M) / FLARE_BELOW_M)
+/** Drawn glide paths have this many extra points through the flare. */
+const FLARE_POINTS = 12
+/**
+ * On final, held to its reported altitude until the glide path is this low
+ * (feet above the field; about where airliners must be stable on the approach,
+ * and pilots usually take over by hand), then eased onto the glide path, fully
+ * from this low (just before the threshold).
+ */
+const GLIDE_FROM_FT = 1000
+const GLIDE_FULL_FT = 50
+/** Reported below the glide path low on final, it settles onto it, the corner rounded off over about this many feet (less nearer the runway). */
+const SETTLE_FT = 150
 /** Only aircraft below this height above the field are assisted at all. */
 const MAX_HEIGHT_FT = 3000
 /** On final from this far out (meters before the threshold), fully from this close. */
@@ -409,6 +590,13 @@ const LIFTOFF_FRACTION = 2 / 3
 const SWITCH_BELOW = 0.05
 /** Moves to another runway only once the reports are this much (meters) nearer its centerline. */
 const SWITCH_MARGIN_M = 60
+/** Guides (see RunwayAssist.guides) fade in and out over about this long (ms, time constant). */
+const GUIDE_FADE_MS = 1500
+const M_PER_NM = 1852
+/** Half the width (meters) of a landing guide's bars: each nautical mile, the gate, the touchdown aiming point. */
+const MILE_BAR_M = 150
+const GATE_BAR_M = 350
+const TOUCHDOWN_BAR_M = 30
 /** Runways within this many degrees of each other are parallel: moving between them slides across. */
 const PARALLEL_DEG = 5
 /** How long (ms) sliding across to a parallel runway's centerline takes (time constant). */

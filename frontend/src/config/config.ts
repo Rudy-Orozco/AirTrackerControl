@@ -253,6 +253,13 @@ export const MAP = {
    * and departure colors, 2D and 3D.
    */
   showAssistPaths: false,
+  /**
+   * What the runway assist guides aircraft along on the runways in use: the
+   * localizer (extended centerline, and how far either side still counts), the
+   * glide path (3D) with a bar every nautical mile, the gate where arrivals are
+   * held to it, the touchdown aiming point; the climb-out for departures.
+   */
+  showRunwayGuides: true,
   /** Show callsign + altitude (hundreds of feet) next to each aircraft. */
   showLabels: true,
   labelSize: 12,

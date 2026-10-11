@@ -110,6 +110,14 @@ const ASSIST_PATHS_SETTING: Setting = {
   type: 'toggle',
 }
 
+/** Applies to both maps, so it's in both tabs. */
+const RUNWAY_GUIDES_SETTING: Setting = {
+  path: 'MAP.showRunwayGuides',
+  label: 'Show localizers and glide paths',
+  hint: 'On runways in use: the extended centerline arrivals and departures are held to, the glide path (3D), mile bars and the 1000 ft gate',
+  type: 'toggle',
+}
+
 /** The panel's tabs, each a few groups. */
 export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
   {
@@ -130,6 +138,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'MAP.planeSize', label: 'Size on the 2D map', type: 'range', min: 4, max: 20, step: 1, unit: 'px' },
           { path: 'MAP.showPredictions', label: 'Show predicted positions', hint: 'Path to the next update for arrivals and departures, 2D and 3D', type: 'toggle' },
           ASSIST_PATHS_SETTING,
+          RUNWAY_GUIDES_SETTING,
         ],
         perKind: perKind('MAP', styleSettings),
       },
@@ -171,6 +180,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'MAP3D.fixedScreenSize', label: 'Same size at any zoom', hint: 'Off: aircraft grow as you zoom in', type: 'toggle' },
           { path: 'MAP3D.altitudeScale', label: 'Altitude exaggeration', hint: 'Terrain too', type: 'range', min: 1, max: 12, step: 0.5, unit: '×' },
           ASSIST_PATHS_SETTING,
+          RUNWAY_GUIDES_SETTING,
         ],
         perKind: perKind('MAP3D', (p) => [
           ...styleSettings(p),

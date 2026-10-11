@@ -105,6 +105,9 @@ ipcMain.handle('zoom', (event, direction) => {
   return win.webContents.getZoomFactor()
 })
 
+// The settings' Shut down button.
+ipcMain.handle('quit', () => app.quit())
+
 async function createWindow() {
   const state = await loadWindowState()
   const win = new BrowserWindow({

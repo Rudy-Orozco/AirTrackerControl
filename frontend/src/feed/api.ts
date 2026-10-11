@@ -151,7 +151,8 @@ function parseAircraft(json: unknown, delaySeconds: number): Aircraft[] {
       groundSpeed: a.gs ?? null,
       altitude: typeof a.alt_baro === 'number' ? trueAltitude(a.alt_baro) : null,
       onGround: a.alt_baro === 'ground',
-      verticalRate: a.baro_rate ?? a.geom_rate ?? null,
+      // The GPS rate where it's sent: the barometric one is noisier.
+      verticalRate: a.geom_rate ?? a.baro_rate ?? null,
       aircraftType: a.t ?? null,
       positionAge: (a.seen_pos ?? 0) + delaySeconds,
       emitterCategory: a.category ?? null,

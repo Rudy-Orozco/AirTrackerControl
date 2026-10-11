@@ -23,8 +23,12 @@ export interface GroundTrack {
   segmentMs: number
   firstSeen: number
   lastSeen: number
-  /** Height above the field (feet), gliding from `fromHeightFt` to 0 over the segment: just touched down. */
+  /**
+   * Height above the field (feet), settling from `fromHeightFt` (descending at
+   * `fromHeightRate`, feet per ms) to 0 over the segment: just touched down.
+   */
   fromHeightFt: number
+  fromHeightRate: number
   /** Whether the current target was predicted ahead (takeoff or landing roll). */
   predicted: boolean
   /** When it last stopped moving, or null while it's moving. */
@@ -44,6 +48,8 @@ export interface GroundTrack {
   vel: LatLon
   heading: number
   heightFt: number
+  /** Feet per ms (negative: descending). */
+  heightRate: number
   opacity: number
 }
 
@@ -136,6 +142,7 @@ export class GroundTracker {
           // A landing glides down to its first ground report; anything else just appears there.
           segmentMs: landing ? segmentMs || FEED.pollMs : 0,
           fromHeightFt: landing?.heightFt ?? 0,
+          fromHeightRate: landing?.climbRate ?? 0,
           predicted,
           // Already on screen in the air, so no fade-in.
           firstSeen: landing ? now - MOTION.fadeInMs : now,
@@ -150,6 +157,7 @@ export class GroundTracker {
           vel: landing?.velocity ?? toVelocity,
           heading: landing?.heading ?? heading,
           heightFt: landing?.heightFt ?? 0,
+          heightRate: landing?.climbRate ?? 0,
           opacity: 0,
         })
         continue
@@ -178,6 +186,7 @@ export class GroundTracker {
       existing.segmentStart = now
       existing.segmentMs = segmentMs
       existing.fromHeightFt = existing.heightFt
+      existing.fromHeightRate = existing.heightRate
       existing.lastSeen = now
       existing.stoppedSince = stopped ? (existing.stoppedSince ?? now) : null
       existing.parked = existing.stoppedSince !== null && now - existing.stoppedSince >= DIORAMA.parkedAfterMs
@@ -196,26 +205,37 @@ export class GroundTracker {
 
       const elapsed = now - t.segmentStart
       const u = t.segmentMs > 0 ? Math.min(elapsed / t.segmentMs, 1) : 1
+      // Never so fast at either end that the curve runs past its report and comes back (braking
+      // to a stop just short of where it's drawn, say): it'd turn round to come back.
+      const [v0, v1] = noOvershoot(t.from, t.fromVelocity, t.to, t.toVelocity, t.segmentMs)
       let glide: LatLon
       if (u < 1) {
         glide = {
-          lat: hermite(t.from.lat, t.fromVelocity.lat, t.to.lat, t.toVelocity.lat, t.segmentMs, u),
-          lon: hermite(t.from.lon, t.fromVelocity.lon, t.to.lon, t.toVelocity.lon, t.segmentMs, u),
+          lat: hermite(t.from.lat, v0.lat, t.to.lat, v1.lat, t.segmentMs, u),
+          lon: hermite(t.from.lon, v0.lon, t.to.lon, v1.lon, t.segmentMs, u),
         }
         t.vel = {
-          lat: hermiteSlope(t.from.lat, t.fromVelocity.lat, t.to.lat, t.toVelocity.lat, t.segmentMs, u),
-          lon: hermiteSlope(t.from.lon, t.fromVelocity.lon, t.to.lon, t.toVelocity.lon, t.segmentMs, u),
+          lat: hermiteSlope(t.from.lat, v0.lat, t.to.lat, v1.lat, t.segmentMs, u),
+          lon: hermiteSlope(t.from.lon, v0.lon, t.to.lon, v1.lon, t.segmentMs, u),
         }
       } else {
         // The next report is late: roll on at the speed it arrived with, easing to a stop.
         const over = Math.max(elapsed - t.segmentMs, 0)
         const carried = COAST_MS * (1 - Math.exp(-over / COAST_MS))
-        glide = { lat: t.to.lat + t.toVelocity.lat * carried, lon: t.to.lon + t.toVelocity.lon * carried }
+        glide = { lat: t.to.lat + v1.lat * carried, lon: t.to.lon + v1.lon * carried }
         const left = Math.exp(-over / COAST_MS)
-        t.vel = { lat: t.toVelocity.lat * left, lon: t.toVelocity.lon * left }
+        t.vel = { lat: v1.lat * left, lon: v1.lon * left }
       }
       let heading = t.fromHeading + (((t.toHeading - t.fromHeading + 540) % 360) - 180) * u
-      t.heightFt = t.fromHeightFt * (1 - u)
+      // Settling onto the runway: carrying on at the rate it was descending, easing to a gentle touchdown.
+      if (t.fromHeightFt > 0 && u < 1) {
+        const [r0, r1] = settleRates(t.fromHeightFt, t.fromHeightRate, t.segmentMs)
+        t.heightFt = Math.max(hermite(t.fromHeightFt, r0, 0, r1, t.segmentMs, u), 0)
+        t.heightRate = hermiteSlope(t.fromHeightFt, r0, 0, r1, t.segmentMs, u)
+      } else {
+        t.heightFt = 0
+        t.heightRate = 0
+      }
 
       // Moving: onto the centerline it's on (if any), facing along it the way it's going.
       let offset = { lat: 0, lon: 0 }
@@ -225,11 +245,14 @@ export class GroundTracker {
         // Which way it's going: its drawn velocity, or the way between reports when barely moving.
         const motion = speed > MIN_SPEED ? bearingOf(t.vel, glide.lat) : bearing(t.from, t.to)
         // Moving away from where the nose points: a pushback. Without a reported nose, only at
-        // pushback speed, so a tight turn between reports can't leave it facing backwards.
+        // pushback speed, so a tight turn between reports can't leave it facing backwards;
+        // or coming to a stop (its next report has it stopped), when any drift back is
+        // just the reports settling, never a turn.
         const slow = (t.info.groundSpeed ?? 0) < PUSHBACK_MAX_KT
-        const reversing = (t.nose !== null || slow) && angleBetween(motion, t.nose ?? t.heading) > 120
+        const stopping = t.toVelocity.lat === 0 && t.toVelocity.lon === 0
+        const reversing = (t.nose !== null || slow || stopping) && angleBetween(motion, t.nose ?? t.heading) > 120
         let along = motion
-        const snapped = MOTION.taxiwaySnap ? this.network?.snap(glide) : null
+        const snapped = MOTION.taxiwaySnap ? this.network?.snap(glide, motion) : null
         if (snapped) {
           offset = { lat: snapped.pos.lat - glide.lat, lon: snapped.pos.lon - glide.lon }
           along = angleBetween(snapped.bearing, motion) <= 90 ? snapped.bearing : snapped.bearing + 180
@@ -257,7 +280,7 @@ export class GroundTracker {
   /** Where a departing aircraft was drawn on the ground, for the airborne tracker to lift off from. */
   handoff(hex: string): Handoff | null {
     const t = this.tracks.get(hex)
-    return t ? { pos: t.pos, velocity: t.vel, heading: t.heading, heightFt: t.heightFt } : null
+    return t ? { pos: t.pos, velocity: t.vel, heading: t.heading, heightFt: t.heightFt, climbRate: t.heightRate } : null
   }
 }
 
@@ -343,6 +366,43 @@ function ahead(f: Flight, ms: number, accel = 0, topKt = Infinity): LatLon {
     lon: f.lon + (meters * Math.sin(rad)) / (M_PER_DEG_LAT * Math.cos((f.lat * Math.PI) / 180)),
   }
 }
+
+/**
+ * The velocities (degrees per ms) a curve from `from` to `to` over `ms` starts
+ * and ends at, slowed where they're so fast along the way between them (more
+ * than three times the average) that the curve would run past `to` and come
+ * back, or back past `from` (as hermite() would); stopped if the two are the same point.
+ */
+function noOvershoot(from: LatLon, v0: LatLon, to: LatLon, v1: LatLon, ms: number): [LatLon, LatLon] {
+  if (ms <= 0) return [v0, v1]
+  const cos = Math.cos((from.lat * Math.PI) / 180)
+  const [north, east] = [to.lat - from.lat, (to.lon - from.lon) * cos]
+  const distance2 = north * north + east * east
+  if (distance2 === 0) return [ZERO, ZERO]
+  const limit = (v: LatLon) => {
+    // How fast it's going along the way, as a multiple of the average.
+    const ratio = ((v.lat * north + v.lon * cos * east) / distance2) * ms
+    return ratio > MAX_OVERSHOOT ? { lat: (v.lat * MAX_OVERSHOOT) / ratio, lon: (v.lon * MAX_OVERSHOOT) / ratio } : v
+  }
+  return [limit(v0), limit(v1)]
+}
+
+/** The fastest (as a multiple of the average speed between reports) a curve can start or end without overshooting. */
+const MAX_OVERSHOOT = 3
+
+/**
+ * The descent rates (feet per ms, negative) settling from `heightFt` onto the
+ * runway over `ms` starts and ends at: the rate it was descending (`rate`),
+ * and a gentle touchdown (TOUCHDOWN_SINK_FPM), each limited so the curve never
+ * climbs or dips below the runway on the way (see noOvershoot).
+ */
+function settleRates(heightFt: number, rate: number, ms: number): [number, number] {
+  const most = (MAX_OVERSHOOT * heightFt) / ms
+  return [-clamp(-rate, 0, most), -Math.min(TOUCHDOWN_SINK_FPM / 60_000, most)]
+}
+
+/** How fast (feet per minute) a landing settles onto the runway at touchdown. */
+const TOUCHDOWN_SINK_FPM = 150
 
 /** Whether `target` lies behind a plane at `pos` pointing along `heading`. */
 function isBehind(pos: LatLon, target: LatLon, heading: number) {

@@ -252,6 +252,12 @@ export function SettingsPanel() {
             <button type="button" className="settings-action" onClick={resetSettings}>
               Reset all to defaults
             </button>
+            {/* Desktop app only: a web page can't close the browser. */}
+            {desktop && (
+              <button type="button" className="settings-action" title="Quit the app" onClick={() => desktop!.quit()}>
+                Shut down
+              </button>
+            )}
             </div>
           </footer>
         </aside>

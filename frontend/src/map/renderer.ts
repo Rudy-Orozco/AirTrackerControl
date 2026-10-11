@@ -5,6 +5,7 @@ import type { Radar } from './radar'
 import type { Terrain } from './terrain'
 import { leaderLine, newLabelState, updateLabels, type LabelItem, type LabelState } from './labels'
 import { estimatedPath, predictedPath, trailStart, type LatLon, type Track } from '../tracking/tracker'
+import type { RunwayGuide } from '../tracking/runwayAssist'
 
 export interface Point {
   x: number
@@ -473,6 +474,42 @@ export function drawAssistPaths(ctx: CanvasRenderingContext2D, paths: { landing:
       else ctx.lineTo(q.x, q.y)
     })
     ctx.stroke()
+  }
+  ctx.restore()
+}
+
+/**
+ * What the runway assist guides aircraft along on the runways in use (see
+ * RunwayAssist.guides), seen from above: the extended centerline dashed, the
+ * edges of the area either side that still counts, and on final a bar every
+ * nautical mile from touchdown, a wider one at the gate where arrivals are
+ * held to the glide path, and a short one at the touchdown aiming point. In the
+ * arrival or departure color, as bold as it's in use.
+ */
+export function drawRunwayGuides(ctx: CanvasRenderingContext2D, guides: RunwayGuide[], project: Projection) {
+  const line = (points: LatLon[]) => {
+    ctx.beginPath()
+    points.forEach((p, i) => {
+      const q = project(p)
+      if (i === 0) ctx.moveTo(q.x, q.y)
+      else ctx.lineTo(q.x, q.y)
+    })
+    ctx.stroke()
+  }
+  ctx.save()
+  ctx.lineWidth = 1
+  for (const g of guides) {
+    ctx.strokeStyle = g.landing ? MAP.traffic.arrival.color : MAP.traffic.departure.color
+    ctx.setLineDash([8, 6])
+    ctx.globalAlpha = 0.5 * g.strength
+    line(g.centerline)
+    ctx.setLineDash([])
+    ctx.globalAlpha = 0.18 * g.strength
+    for (const edge of g.edges) line(edge)
+    for (const bar of g.bars) {
+      ctx.globalAlpha = (bar.kind === 'mile' ? 0.35 : 0.6) * g.strength
+      line([bar.from, bar.to])
+    }
   }
   ctx.restore()
 }

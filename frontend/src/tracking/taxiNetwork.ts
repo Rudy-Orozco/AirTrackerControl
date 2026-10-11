@@ -43,21 +43,30 @@ export class TaxiNetwork {
   /**
    * The nearest point on a centerline within reach of `pos`, and the line's
    * direction there (degrees from north, either way along it), or null when
-   * there's none (out on an apron, say).
+   * there's none (out on an apron, say). Moving along `motion` (degrees from
+   * north), lines running that way count as nearer than those crossing it, so
+   * an aircraft going straight through an intersection stays on its own line
+   * rather than being pulled onto the crossing one; turning, it moves over to
+   * the new line as it comes round to it.
    */
-  snap(pos: LatLon): { pos: LatLon; bearing: number } | null {
+  snap(pos: LatLon, motion: number | null = null): { pos: LatLon; bearing: number } | null {
     const p = this.toMeters(pos)
     const candidates = this.cells.get(`${Math.floor(p.x / CELL_M)},${Math.floor(p.y / CELL_M)}`)
     if (!candidates) return null
+    const [mx, my] = motion === null ? [0, 0] : [Math.sin((motion * Math.PI) / 180), Math.cos((motion * Math.PI) / 180)]
     let best: { x: number; y: number; segment: Segment } | null = null
-    let bestDistance = SNAP_M
+    let bestCost = Infinity
     for (const s of candidates) {
       const t = Math.min(Math.max((p.x - s.ax) * s.dx + (p.y - s.ay) * s.dy, 0), s.length)
       const x = s.ax + s.dx * t
       const y = s.ay + s.dy * t
       const d = Math.hypot(p.x - x, p.y - y)
-      if (d < bestDistance) {
-        bestDistance = d
+      if (d > SNAP_M) continue
+      // 0 along the way it's moving (either way along the line), 1 straight across it.
+      const across = motion === null ? 0 : 1 - Math.abs(s.dx * mx + s.dy * my)
+      const cost = d + across * CROSSING_M
+      if (cost < bestCost) {
+        bestCost = cost
         best = { x, y, segment: s }
       }
     }
@@ -89,4 +98,6 @@ const M_PER_DEG = 111_320
  * about a wide taxiway's half-width, plus GPS error and corner-cutting.
  */
 export const SNAP_M = 35
+/** How much further off (meters) a line straight across the way it's moving counts as, choosing which to snap to. */
+const CROSSING_M = 30
 const CELL_M = 100

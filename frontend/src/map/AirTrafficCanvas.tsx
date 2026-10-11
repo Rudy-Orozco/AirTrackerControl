@@ -1,7 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { CENTER, MAP, VIEW_RADIUS_NM } from '../config/config'
 import { watchMapLayers, type MapLayers } from './mapLayers'
-import { createProjection, createView, drawAssistPaths, drawFocusBrackets, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
+import { createProjection, createView, drawAssistPaths, drawFocusBrackets, drawRunwayGuides, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
 import { settingsVersion } from '../config/settings'
 import type { GroundTracker } from '../tracking/groundTracker'
 import { locateAircraft, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
@@ -225,6 +225,8 @@ export function AirTrafficCanvas({
       } else {
         ctx.drawImage(background, 0, 0, width, height)
       }
+      // The localizers and climb-outs of the runways in use, under everything else.
+      if (MAP.showRunwayGuides) drawRunwayGuides(ctx, tracker.runwayGuides(performance.now()), drawn)
       // The landing and takeoff paths aircraft are being guided along, under them.
       if (MAP.showAssistPaths) {
         const paths = []

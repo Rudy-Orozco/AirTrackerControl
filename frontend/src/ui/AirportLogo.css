@@ -1,4 +1,8 @@
-/* The airport's logo, over the map in the top-left corner, on a white plate like a sign. */
+/*
+ * The airport's logo, over the map in the top-left corner: a silhouette in the
+ * text color, a little dimmed, like the rest of the interface over the map.
+ * The box is the same size as ever, so what's laid out around it stays put.
+ */
 .airport-logo {
   position: absolute;
   top: 12px;
@@ -8,15 +12,16 @@
   box-sizing: border-box;
   height: 72px;
   max-width: min(320px, 40vw);
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: rgb(255 255 255 / 0.94);
-  box-shadow: 0 2px 12px rgb(0 0 0 / 0.4);
+  padding: 10px 0;
 }
 
-.airport-logo img {
+.airport-logo canvas {
   display: block;
   height: 100%;
   max-width: 100%;
   object-fit: contain;
+  object-position: left center;
+  opacity: 0.8;
+  /* Keeps it legible over bright terrain or radar. */
+  filter: drop-shadow(0 1px 4px rgb(0 0 0 / 0.6));
 }

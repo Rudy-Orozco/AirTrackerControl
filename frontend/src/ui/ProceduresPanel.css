@@ -1,0 +1,304 @@
+/* The STARs and SIDs panel: the settings panel's frame (settings-panel), with its own list. */
+.procedures-panel {
+  width: min(420px, calc(100vw - 24px));
+}
+
+/* The title bar moves it. */
+.procedures-header {
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.procedures-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.procedures-filter {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgb(220 230 245 / 0.04);
+  color: var(--text);
+  font: inherit;
+}
+
+.procedures-flying {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.procedures-predict {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.procedures-predict small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* The Waypoints tab: its settings, as in the settings panel. */
+.waypoint-settings {
+  margin-top: 12px;
+}
+
+.waypoint-alt {
+  font: 11px var(--mono);
+  color: var(--text-dim);
+}
+
+.procedures-bulk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.procedures-bulk span {
+  margin-right: auto;
+}
+
+.procedures-bulk .settings-action {
+  margin-top: 0;
+  padding: 3px 10px;
+}
+
+.procedures-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.procedure {
+  border-bottom: 1px solid var(--line);
+}
+
+/* Approaches, by runway: a heading for each, its approaches indented under it. */
+.procedure-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.procedure-group-row h4 {
+  margin: 0;
+  font: 700 11px var(--sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.procedure-group-count {
+  margin-right: auto;
+  font: 11px var(--mono);
+  color: var(--text-dim);
+}
+
+.procedure-group .procedures-list {
+  padding-left: 12px;
+}
+
+/* The heading's fold arrow, turned down while open. */
+.procedure-fold {
+  margin-left: -6px;
+}
+
+.procedure-group.is-open .procedure-fold {
+  transform: rotate(90deg);
+}
+
+/* A runway being landed on. */
+.procedure-in-use {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgb(78 162 255 / 0.15);
+  color: #4ea2ff;
+  font: 600 9px var(--sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* "Landing now": a chip per runway, lit while its approaches are shown. */
+.procedures-landing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.procedure-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: none;
+  color: var(--text);
+  font: 600 12px var(--mono);
+  cursor: pointer;
+}
+
+.procedure-chip:hover:not(:disabled) {
+  background: rgb(220 230 245 / 0.06);
+}
+
+.procedure-chip.is-on {
+  border-color: var(--procedure);
+  color: var(--procedure);
+}
+
+.procedure-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.procedure-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+/* Off: left out of matching and drawing; dimmed. */
+.procedure.is-off .procedure-name,
+.procedure.is-off .procedure-runways {
+  opacity: 0.4;
+}
+
+/* Shown on the map: an eye, in the procedure's color when it is. */
+.procedure-show {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.procedure-show:hover:not(:disabled) {
+  background: rgb(220 230 245 / 0.06);
+  color: var(--text);
+}
+
+.procedure-show.is-on {
+  color: var(--procedure);
+}
+
+.procedure-show:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.procedure-name {
+  font: 600 13px var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--procedure);
+}
+
+/* Flights on it now. */
+.procedure-flying {
+  font: 600 11px var(--mono);
+  color: var(--text);
+}
+
+.procedure-runways {
+  margin-left: auto;
+  overflow: hidden;
+  font: 11px var(--mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.procedure-expand {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: 16px / 1 var(--sans);
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.procedure-expand:hover {
+  color: var(--text);
+}
+
+.procedure.is-open .procedure-expand {
+  transform: rotate(90deg);
+}
+
+/* Its parts, waypoint by waypoint. */
+.procedure-detail {
+  padding: 2px 0 10px 24px;
+  font: 11px / 1.6 var(--mono);
+}
+
+.procedure-detail h4 {
+  margin: 6px 0 2px;
+  font: 600 9px var(--sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.procedure-detail p {
+  margin: 0 0 3px;
+}
+
+.procedure-detail b {
+  margin-right: 8px;
+  color: var(--procedure);
+}
+
+.procedure-detail small {
+  margin-left: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.procedure-arrow {
+  color: var(--text-dim);
+}
+
+.procedures-empty {
+  margin: 14px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.procedures-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-dim);
+}

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { aircraftSource, fetchAircraft } from './api'
 import { FlightBoard, type BoardState } from '../board/flightBoard'
-import { FEED, MOTION } from '../config/config'
+import { FEED, MOTION, STATS } from '../config/config'
 import { AirportStats, type AirportStatsState } from '../tracking/airportStats'
 import { FlightClassifier } from '../tracking/flights'
+import { identifying, procedureMatcher } from '../procedures/matcher'
 import { RouteCache } from './routes'
 import type { GroundTracker } from '../tracking/groundTracker'
 import type { Tracker } from '../tracking/tracker'
@@ -45,6 +46,9 @@ export interface Feed {
   stats: AirportStatsState | null
   boot: BootState
 }
+
+/** For the procedure matcher while it's off (it doesn't look). */
+const NO_RUNWAYS = { landing: [], departing: [] }
 
 /** First guesses at how long a fetch and the route lookup take, before either has been timed. */
 const EXPECTED_FETCH_MS = 2500
@@ -142,6 +146,7 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
         ground.step(now)
         tracker.ingest(flights, now, (hex) => ground.handoff(hex))
         ground.ingest(flights, now, (hex) => tracker.handoff(hex))
+        procedureMatcher.update(flights, identifying() ? tracker.runwaysInUse(Date.now(), STATS.runwayHoldMs) : NO_RUNWAYS)
         const count = flights.filter((f) => !f.onGround).length
         const nextPoll = scheduleNext()
         setFeed({

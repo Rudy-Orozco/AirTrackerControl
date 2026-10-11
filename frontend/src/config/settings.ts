@@ -3,6 +3,7 @@ import type { FlightKind } from '../tracking/flights'
 import { AIRPORT, CONFIG_DEFAULTS, getConfigValue, loadSavedSettings, PRESETS, setConfigValue, SETTINGS_KEY } from './config'
 import { TRAFFIC_ICONS, trafficLevel } from './traffic'
 import { resetAirportStats } from '../tracking/airportStats'
+import { downloadProcedures, pickProceduresFile, proceduresSummary, removeImportedProcedures } from '../procedures/procedures'
 
 /**
  * The settings panel's catalogue: which config values it offers and how. Values
@@ -82,6 +83,44 @@ export const MINIMAP_TOWER_LOCK_SETTING: Setting = {
   type: 'toggle',
 }
 
+/** Also toggled in the procedures panel. */
+export const IDENTIFY_SETTING: Setting = {
+  path: 'PROCEDURES.identify',
+  label: 'Identify flights',
+  hint: "Work out each flight's procedure, for a followed flight's route, its details and the stats. Off: just for study, nothing running",
+  type: 'toggle',
+}
+
+/** Also toggled in the procedures panel. */
+export const PREDICT_SETTING: Setting = {
+  path: 'PROCEDURES.predict',
+  label: 'Predicted path',
+  hint: "A followed flight's likeliest procedure and branch. Off: only once its path shows one, with every branch",
+  type: 'toggle',
+}
+
+/** The procedures panel's Waypoints tab: how waypoints on their own are shown. */
+export const WAYPOINT_SETTINGS: Setting[] = [
+  { path: 'PROCEDURES.showWaypoints', label: 'Show all', hint: 'Every waypoint in the procedures. Off: only those with their eye on below', type: 'toggle' },
+  { path: 'PROCEDURES.waypointLabels', label: 'Names', type: 'toggle' },
+  {
+    path: 'PROCEDURES.waypointAltitude',
+    label: 'Altitude (3D map)',
+    type: 'select',
+    options: [
+      { value: 'charted', label: 'As charted (else on the ground)' },
+      { value: 'ground', label: 'On the ground' },
+      { value: 'fixed', label: 'All at one altitude' },
+    ],
+  },
+  { path: 'PROCEDURES.waypointFixedFt', label: 'One altitude', hint: 'When all are at one altitude', type: 'range', min: 1000, max: 20_000, step: 500, unit: 'ft' },
+  { path: 'PROCEDURES.waypointDropLine', label: 'Drop line', hint: 'Down to the ground, from one in the air (3D map)', type: 'toggle' },
+  { path: 'PROCEDURES.waypointGroundDot', label: 'Ground dot', hint: 'Where the drop line meets the ground', type: 'toggle' },
+  { path: 'PROCEDURES.waypointSize', label: 'Size', type: 'range', min: 1, max: 8, step: 0.5, unit: 'px' },
+  { path: 'PROCEDURES.waypointOpacity', label: 'Opacity', type: 'range', min: 0.1, max: 1, step: 0.05 },
+  { path: 'PROCEDURES.waypointColor', label: 'Color', type: 'color' },
+]
+
 /** Also toggled by the tower button in the toolbar (3D map). */
 export const TOWER_SETTING: Setting = {
   path: 'MAP3D.tower',
@@ -101,6 +140,10 @@ export interface SettingGroup {
   /** Settings of the kind of traffic picked at the top of the tab (none for kinds it returns nothing for). */
   perKind?: (kind: FlightKind) => Setting[]
   action?: { label: string; run: () => void }
+  /** More buttons, in a row, after `action`. */
+  actions?: { label: string; run: () => void; title?: string }[]
+  /** A line of status under the title (e.g. what's loaded), worked out each time the panel draws. */
+  note?: () => string
 }
 
 export const KINDS: FlightKind[] = ['arrival', 'departure', 'other']
@@ -468,6 +511,32 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           },
         ],
         action: { label: 'Reset stats', run: resetAirportStats },
+      },
+      {
+        title: 'Procedures',
+        note: proceduresSummary,
+        settings: [
+          {
+            path: 'PROCEDURES.enabled',
+            label: 'Procedures',
+            hint: 'STARs, SIDs and approaches: the procedures button, and each followed flight\'s: flown, ahead and where it may branch off',
+            type: 'toggle',
+          },
+          IDENTIFY_SETTING,
+          PREDICT_SETTING,
+          { path: 'PROCEDURES.show2d', label: 'On the 2D map', hint: 'And the minimap', type: 'toggle' },
+          { path: 'PROCEDURES.show3d', label: 'On the 3D map', hint: 'In the air, at their altitude restrictions', type: 'toggle' },
+          { path: 'PROCEDURES.labels', label: 'Waypoint names', type: 'toggle' },
+          { path: 'PROCEDURES.opacity', label: 'Opacity', type: 'range', min: 0.1, max: 1, step: 0.05 },
+          { path: 'PROCEDURES.starColor', label: 'STAR color', type: 'color' },
+          { path: 'PROCEDURES.sidColor', label: 'SID color', type: 'color' },
+          { path: 'PROCEDURES.approachColor', label: 'Approach color', type: 'color' },
+        ],
+        actions: [
+          { label: 'Import JSON…', run: pickProceduresFile, title: 'Load STARs, SIDs and approaches for this airport from a JSON file (format in README.md)' },
+          { label: 'Download', run: downloadProcedures, title: 'Save the ones in use as JSON, to edit and import again' },
+          { label: 'Remove imported', run: removeImportedProcedures, title: 'Go back to the built-in ones, if there are any' },
+        ],
       },
       {
         title: 'Data',

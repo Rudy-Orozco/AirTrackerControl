@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { DIORAMA, MAP, MAP3D } from '../config/config'
+import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { DIORAMA, MAP, MAP3D, PROCEDURES } from '../config/config'
 import { desktop } from '../lib/desktop'
 import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
 import { cancelPicking, clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
@@ -24,6 +24,8 @@ import {
   type Setting,
   type SettingGroup,
 } from '../config/settings'
+import { useProcedures } from '../procedures/procedures'
+import { ProceduresPanel } from './ProceduresPanel'
 import './SettingsPanel.css'
 
 /**
@@ -33,10 +35,14 @@ import './SettingsPanel.css'
  */
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
+  const [menu, setMenu] = useState<'camera' | 'more' | null>(null)
+  const [proceduresOpen, setProceduresOpen] = useState(false)
   const [tab, setTab] = useState(loadTab)
   const [kind, setKind] = useState(loadKind)
   const fullScreen = useFullScreen()
   useSettingsVersion()
+  // What's loaded shows in the Procedures section, and changes on import.
+  useProcedures()
   const activeTab = SETTING_TABS[tab] ?? SETTING_TABS[0]
 
   const chooseTab = (index: number) => {
@@ -58,13 +64,24 @@ export function SettingsPanel() {
   }
 
   useEffect(() => {
-    if (!open) return
+    if (!open && !menu && !proceduresOpen) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      setMenu(null)
+      setProceduresOpen(false)
+    }
+    // A menu closes when anything else is pressed.
+    const onPointer = (e: PointerEvent) => {
+      if (!(e.target as Element).closest?.('.toolbar-menu')) setMenu(null)
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
+    window.addEventListener('pointerdown', onPointer)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onPointer)
+    }
+  }, [open, menu, proceduresOpen])
 
   const is3d = MAP.view === '3d'
   const terrain = MAP.terrain
@@ -73,131 +90,121 @@ export function SettingsPanel() {
   const minimap = minimapShown()
   const { anchor, picking } = useOrbitAnchor()
   const street = useStreetView()
-  const toolbar = useToolbarReveal(open || picking !== false || street.state !== 'off')
+  const toolbar = useToolbarReveal(open || proceduresOpen || menu !== null || picking !== false || street.state !== 'off')
   return (
     <>
       <div className={`toolbar${toolbar.shown ? ' is-shown' : ''}`} onPointerDownCapture={toolbar.onPointerDown}>
-      {desktop && <ZoomControl />}
-      {/* No orbit point to place while standing still: the view turns in place. */}
-      {is3d && orbit && !tower && street.state === 'off' && (
+      {PROCEDURES.enabled && (
         <button
           type="button"
-          className={`toolbar-button axis-button${picking ? ' is-on is-picking' : ''}`}
-          aria-label={picking ? 'Cancel placing the orbit point' : anchor ? 'Move the orbit point' : 'Place the orbit point'}
-          aria-pressed={picking !== false}
-          title={
-            picking === 'axis'
-              ? 'Click a spot on the map to stand the axis there (Esc to cancel)'
-              : picking === 'height'
-                ? 'Click to set how high up the axis to orbit around (Esc to cancel)'
-                : anchor
-                  ? 'Move the orbit point: click the map for an axis, then click again for a height up it'
-                  : 'Place the orbit point: click the map for an axis, then click again for a height up it'
-          }
-          onClick={toggleAnchor}
-        >
-          <AxisIcon />
-        </button>
-      )}
-      {/* Tower view: the camera in the control tower cab, with the minimap docked in the board. */}
-      {is3d && TOWER_SPOT && (
-        <button
-          type="button"
-          className={`toolbar-button tower-button${tower ? ' is-on' : ''}`}
-          aria-label={tower ? 'Leave tower view' : 'Tower view'}
-          aria-pressed={tower}
-          title={tower ? 'Leave tower view (Esc)' : "Tower view: look out over the airport from its control tower, with the minimap in the board"}
+          className={`toolbar-button procedures-button${proceduresOpen ? ' is-on' : ''}`}
+          aria-label="Procedures"
+          aria-pressed={proceduresOpen}
+          title="Procedures (STARs, SIDs, approaches): pick which to show on the map, and read them"
           onClick={() => {
-            cancelPicking()
-            leaveStreetView()
-            setSetting(TOWER_SETTING, !tower)
+            setProceduresOpen((o) => !o)
+            setOpen(false)
+            setMenu(null)
           }}
         >
-          <TowerIcon />
+          <RouteIcon />
         </button>
       )}
-      {/* Street view: offered while the camera is near the airport. */}
-      {is3d && (street.available || street.state !== 'off') && (
-        <button
-          type="button"
-          className={`toolbar-button axis-button street-button${street.state === 'placing' ? ' is-on is-picking' : street.state === 'standing' ? ' is-on' : ''}`}
-          aria-label={street.state === 'off' ? 'Street view' : street.state === 'placing' ? 'Cancel street view' : 'Leave street view'}
-          aria-pressed={street.state !== 'off'}
-          title={
-            street.state === 'placing'
-              ? 'Click a spot on the ground at the airport to stand there (Esc to cancel)'
-              : street.state === 'standing'
-                ? 'Leave street view (Esc)'
-                : 'Street view: stand on the ground at the airport, 6 ft up, and watch the aircraft'
-          }
-          onClick={() => {
-            cancelPicking()
-            // Down from the tower to pick a spot in the street.
-            if (tower) setSetting(TOWER_SETTING, false)
-            toggleStreetView()
-          }}
-        >
-          <PersonIcon />
-        </button>
-      )}
+      {/* The 3D camera's ways of moving and standing, in one menu; its button shows the one in use. */}
       {is3d && (
-        <button
-          type="button"
-          className={`toolbar-button orbit-button${orbit ? ' is-on' : ''}`}
-          aria-label={orbit ? 'Stop orbiting' : 'Orbit'}
-          aria-pressed={orbit}
-          title={orbit ? 'Stop orbiting' : tower || street.state !== 'off' ? 'Turn the view around slowly (direction and speed in Settings › 3D Map)' : 'Orbit around the point the camera looks at (direction and speed in Settings › 3D Map)'}
-          onClick={() => {
-            // The orbit point goes with the orbit (the camera stays put, free to pan again).
-            if (orbit) clearAnchor()
-            setSetting(ORBIT_SETTING, !orbit)
-          }}
+        <ToolbarMenu
+          label="Camera"
+          title="Camera: orbit, tower view, street view"
+          icon={tower ? <TowerIcon /> : street.state !== 'off' ? <PersonIcon /> : orbit ? <OrbitIcon /> : <CameraIcon />}
+          open={menu === 'camera'}
+          onToggle={() => setMenu(menu === 'camera' ? null : 'camera')}
+          active={orbit || tower || street.state !== 'off'}
+          picking={picking !== false || street.state === 'placing'}
         >
-          <OrbitIcon />
-        </button>
+          <MenuItem
+            icon={<OrbitIcon />}
+            label={orbit ? 'Stop orbiting' : tower || street.state !== 'off' ? 'Turn the view slowly' : 'Orbit'}
+            hint="Direction and speed in Settings › 3D Map"
+            on={orbit}
+            onClick={() => {
+              // The orbit point goes with the orbit (the camera stays put, free to pan again).
+              if (orbit) clearAnchor()
+              setSetting(ORBIT_SETTING, !orbit)
+            }}
+          />
+          {/* No orbit point to place while standing still: the view turns in place. */}
+          {orbit && !tower && street.state === 'off' && (
+            <MenuItem
+              icon={<AxisIcon />}
+              label={picking ? 'Cancel placing the orbit point' : anchor ? 'Move the orbit point' : 'Place the orbit point'}
+              hint="Click the map for an axis, then again for a height up it (Esc to cancel)"
+              on={picking !== false}
+              picking={picking !== false}
+              onClick={toggleAnchor}
+            />
+          )}
+          {TOWER_SPOT && (
+            <MenuItem
+              icon={<TowerIcon />}
+              label={tower ? 'Leave tower view' : 'Tower view'}
+              hint="From the control tower cab, with the minimap in the board (Esc to leave)"
+              on={tower}
+              onClick={() => {
+                cancelPicking()
+                leaveStreetView()
+                setSetting(TOWER_SETTING, !tower)
+              }}
+            />
+          )}
+          {/* Offered while the camera is near the airport. */}
+          {(street.available || street.state !== 'off') && (
+            <MenuItem
+              icon={<PersonIcon />}
+              label={street.state === 'off' ? 'Street view' : street.state === 'placing' ? 'Cancel street view' : 'Leave street view'}
+              hint={street.state === 'placing' ? 'Click a spot on the ground at the airport (Esc to cancel)' : 'Stand at the airport, 6 ft up'}
+              on={street.state !== 'off'}
+              picking={street.state === 'placing'}
+              onClick={() => {
+                cancelPicking()
+                // Down from the tower to pick a spot in the street.
+                if (tower) setSetting(TOWER_SETTING, false)
+                toggleStreetView()
+              }}
+            />
+          )}
+        </ToolbarMenu>
       )}
-      {(DIORAMA.enabled || minimap) && (
-        <button
-          type="button"
-          className="toolbar-button place-button"
-          aria-label={DIORAMA.enabled ? 'Bring back the airport view' : 'Bring back the minimap'}
-          title={
-            DIORAMA.enabled && minimap
-              ? 'Bring the 3D airport view (keeping its angle) and the minimap back to their corners'
-              : DIORAMA.enabled
-                ? 'Bring the 3D airport view back to its corner (keeps its angle)'
-                : 'Bring the minimap back to its corner'
-          }
-          onClick={() => {
-            if (DIORAMA.enabled) resetDioramaPlacement({ keepAngle: true })
-            if (minimap) resetMinimapPlacement()
-          }}
-        >
-          <PlaceIcon />
-        </button>
-      )}
-      {document.fullscreenEnabled && (
-        <button
-          type="button"
-          className={`toolbar-button fullscreen-button${fullScreen ? ' is-on' : ''}`}
-          aria-label={fullScreen ? 'Exit full screen' : 'Full screen'}
-          aria-pressed={fullScreen}
-          title={fullScreen ? 'Exit full screen (Esc)' : 'Full screen'}
-          onClick={toggleFullScreen}
-        >
-          <FullScreenIcon exit={fullScreen} />
-        </button>
-      )}
-      <button
-        type="button"
-        className={`toolbar-button terrain-button${terrain ? ' is-on' : ''}`}
-        aria-label={terrain ? 'Hide terrain' : 'Show terrain'}
-        aria-pressed={terrain}
-        title={terrain ? 'Hide terrain' : 'Show terrain'}
-        onClick={() => setSetting(TERRAIN_SETTING, !terrain)}
+      <ToolbarMenu
+        label="More"
+        title="Terrain, full screen, and more"
+        icon={<MoreIcon />}
+        open={menu === 'more'}
+        onToggle={() => setMenu(menu === 'more' ? null : 'more')}
+        active={false}
+        picking={false}
       >
-        <MountainIcon />
-      </button>
+        <MenuItem icon={<MountainIcon />} label="Terrain" hint="Hill shading in 2D, relief in 3D" on={terrain} onClick={() => setSetting(TERRAIN_SETTING, !terrain)} />
+        {document.fullscreenEnabled && (
+          <MenuItem icon={<FullScreenIcon exit={fullScreen} />} label={fullScreen ? 'Exit full screen' : 'Full screen'} on={fullScreen} onClick={toggleFullScreen} />
+        )}
+        {(DIORAMA.enabled || minimap) && (
+          <MenuItem
+            icon={<PlaceIcon />}
+            label="Bring back panels"
+            hint={DIORAMA.enabled && minimap ? 'The 3D airport view (keeping its angle) and the minimap' : DIORAMA.enabled ? 'The 3D airport view, keeping its angle' : 'The minimap'}
+            onClick={() => {
+              if (DIORAMA.enabled) resetDioramaPlacement({ keepAngle: true })
+              if (minimap) resetMinimapPlacement()
+            }}
+          />
+        )}
+        {desktop && (
+          <div className="toolbar-item toolbar-zoom">
+            <span>Page zoom</span>
+            <ZoomControl />
+          </div>
+        )}
+      </ToolbarMenu>
       <button
         type="button"
         className={`toolbar-button view-button${is3d ? ' is-3d' : ''}`}
@@ -212,11 +219,16 @@ export function SettingsPanel() {
         className={`toolbar-button settings-button${open ? ' is-open' : ''}`}
         aria-label="Settings"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          setOpen((o) => !o)
+          setProceduresOpen(false)
+          setMenu(null)
+        }}
       >
         <GearIcon />
       </button>
       </div>
+      {proceduresOpen && PROCEDURES.enabled && <ProceduresPanel onClose={() => setProceduresOpen(false)} />}
       {open && (
         <aside className="settings-panel" aria-label="Settings">
           <header className="settings-header">
@@ -249,6 +261,7 @@ export function SettingsPanel() {
               return (
               <section key={group.title} className="settings-group">
                 <h3>{group.title}</h3>
+                {group.note && <p className="settings-note-line">{group.note()}</p>}
                 {group.settings.map((s) => (
                   <SettingRow key={s.path} setting={s} />
                 ))}
@@ -265,6 +278,15 @@ export function SettingsPanel() {
                   <button type="button" className="settings-action" onClick={group.action.run}>
                     {group.action.label}
                   </button>
+                )}
+                {group.actions && (
+                  <div className="settings-actions">
+                    {group.actions.map((a) => (
+                      <button key={a.label} type="button" className="settings-action" title={a.title} onClick={a.run}>
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </section>
               )
@@ -297,6 +319,93 @@ export function SettingsPanel() {
         </aside>
       )}
     </>
+  )
+}
+
+/**
+ * A toolbar button that opens a short menu under it. `active` marks the button
+ * while something in it is on; `picking`, while it waits for a click on the map.
+ */
+function ToolbarMenu({
+  label,
+  title,
+  icon,
+  open,
+  onToggle,
+  active,
+  picking,
+  children,
+}: {
+  label: string
+  title: string
+  icon: ReactNode
+  open: boolean
+  onToggle: () => void
+  active: boolean
+  picking: boolean
+  children: ReactNode
+}) {
+  return (
+    <div className="toolbar-menu">
+      <button
+        type="button"
+        className={`toolbar-button${active ? ' is-on' : ''}${picking ? ' is-picking' : ''}`}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={title}
+        onClick={onToggle}
+      >
+        {icon}
+      </button>
+      {open && (
+        <div
+          className="toolbar-popover"
+          role="menu"
+          aria-label={label}
+          // Picking something closes the menu (out of the way of a click on the map, say); the page zoom stays open to step through.
+          onClick={(e) => {
+            const target = e.target as Element
+            if (target.closest('.toolbar-item') && !target.closest('.toolbar-zoom')) onToggle()
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One choice in a toolbar menu: an icon, a label and a line of help; `on` while it's on. */
+function MenuItem({
+  icon,
+  label,
+  hint,
+  on = false,
+  picking = false,
+  onClick,
+}: {
+  icon: ReactNode
+  label: string
+  hint?: string
+  on?: boolean
+  picking?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemcheckbox"
+      aria-checked={on}
+      className={`toolbar-item${on ? ' is-on' : ''}${picking ? ' is-picking' : ''}`}
+      onClick={onClick}
+    >
+      <span className="toolbar-item-icon">{icon}</span>
+      <span className="toolbar-item-text">
+        {label}
+        {hint && <small>{hint}</small>}
+      </span>
+    </button>
   )
 }
 
@@ -479,7 +588,8 @@ function loadKind(): FlightKind {
   }
 }
 
-function SettingRow({ setting }: { setting: Setting }) {
+/** One setting with its control (also used in the procedures panel's Waypoints tab). */
+export function SettingRow({ setting }: { setting: Setting }) {
   const id = useId()
   const value = getSetting(setting)
   return (
@@ -648,6 +758,39 @@ function PersonIcon() {
     <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="5" r="2" />
       <path d="M12 8v6M8.5 10.5L12 9l3.5 1.5M12 14l-2.5 5M12 14l2.5 5M5 20h14" />
+    </svg>
+  )
+}
+
+/** A route through waypoints: a line bending through three points. */
+function RouteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 19l6-7 5 3 5-10" />
+      <path d="M10 9.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5L6.5 13 9 12z" fill="currentColor" stroke="none" />
+      <circle cx="4" cy="19" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="5" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+/** A camera body with its lens. */
+function CameraIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 8h4l2-3h6l2 3h4v11H3z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </svg>
+  )
+}
+
+/** Three dots. */
+function MoreIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.7" />
+      <circle cx="12" cy="12" r="1.7" />
+      <circle cx="19" cy="12" r="1.7" />
     </svg>
   )
 }

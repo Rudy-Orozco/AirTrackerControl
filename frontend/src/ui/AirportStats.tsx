@@ -1,5 +1,8 @@
 import { useEffect, useState, type CSSProperties } from 'react'
-import { MAP, MAP3D, STATS } from '../config/config'
+import { MAP, MAP3D, PROCEDURES, STATS } from '../config/config'
+import { procedureMatcher } from '../procedures/matcher'
+import { procedureColor } from '../map/procedureLayer'
+import { proceduresState } from '../procedures/procedures'
 import { RESET_STATS_EVENT, type AirportStatsState } from '../tracking/airportStats'
 import type { Tracker } from '../tracking/tracker'
 import './AirportStats.css'
@@ -15,6 +18,8 @@ export function AirportStats({ stats: fed, tracker }: { stats: AirportStatsState
   const stats = useSinceReset(fed)
   // The runways in use change between updates, as aircraft line up and land.
   const runways = tracker.runwaysInUse(now, STATS.runwayHoldMs)
+  // The busiest procedures right now.
+  const procedures = PROCEDURES.enabled && proceduresState().data ? procedureMatcher.inUse().slice(0, STATS_PROCEDURES) : []
   if (!stats) return null
 
   const elapsed = now - stats.since
@@ -68,6 +73,17 @@ export function AirportStats({ stats: fed, tracker }: { stats: AirportStatsState
           {runways.departing.length > 0 && <b className="is-departure"> {runways.departing.join(' ')}</b>}
         </p>
       )}
+      {procedures.length > 0 && (
+        <p>
+          via
+          {procedures.map(({ procedure, kind, count }) => (
+            <span key={procedure.name}>
+              {' '}
+              <b style={{ color: procedureColor(kind) }}>{procedure.name}</b> {count}
+            </span>
+          ))}
+        </p>
+      )}
       {events.length > 0 && <p className="is-notable">{events.join(' · ')}</p>}
     </section>
   )
@@ -78,6 +94,9 @@ function formatInterval(ms: number) {
   const seconds = Math.round(ms / 1000)
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
 }
+
+/** How many of the busiest procedures to list. */
+const STATS_PROCEDURES = 4
 
 /** Rates need this much counting before they mean anything. */
 const MIN_RATE_WINDOW_MS = 5 * 60_000

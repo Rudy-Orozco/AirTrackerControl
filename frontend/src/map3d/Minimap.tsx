@@ -21,6 +21,7 @@ import { locateAircraft, selectAircraft, selectedAircraft } from '../tracking/se
 import type { Tracker } from '../tracking/tracker'
 import { LockIcon } from '../ui/icons'
 import { minimapInBoard } from './tower'
+import { drawProcedures } from '../map/procedureLayer'
 import './Minimap.css'
 
 const STORAGE_KEY = 'minimap'
@@ -109,6 +110,9 @@ export function Minimap({ tracker, ground }: { tracker: Tracker; ground: GroundT
       }
       if (background) ctx.drawImage(background, 0, 0, width, height)
       withMapStyle(MINIMAP, () => {
+        const hex = selectedAircraft()
+        const followed = hex ? locateAircraft(hex, tracker, ground) : null
+        drawProcedures(ctx, project, hex && followed ? { hex, pos: followed.pos } : null)
         if (MINIMAP.showRunwayGuides) drawRunwayGuides(ctx, tracker.runwayGuides(performance.now()), project)
         if (MINIMAP.showAssistPaths) {
           const paths = []

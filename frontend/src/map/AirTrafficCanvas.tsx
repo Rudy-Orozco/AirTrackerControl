@@ -8,6 +8,7 @@ import { locateAircraft, routeOf, selectAircraft, selectedAircraft } from '../tr
 import type { Tracker } from '../tracking/tracker'
 import { uncoveredArea } from '../lib/layout'
 import { isDoubleTap, TAP_SLOP_PX, type Tap } from '../lib/touch'
+import { drawProcedures } from './procedureLayer'
 import './AirTrafficCanvas.css'
 
 /**
@@ -225,7 +226,9 @@ export function AirTrafficCanvas({
       } else {
         ctx.drawImage(background, 0, 0, width, height)
       }
-      // The localizers and climb-outs of the runways in use, under everything else.
+      // STARs, SIDs and approaches, under everything else.
+      drawProcedures(ctx, drawn, focus && selectedAircraft() ? { hex: selectedAircraft()!, pos: focus.pos } : null)
+      // The localizers and climb-outs of the runways in use.
       if (MAP.showRunwayGuides) drawRunwayGuides(ctx, tracker.runwayGuides(performance.now()), drawn)
       // The landing and takeoff paths aircraft are being guided along, under them.
       if (MAP.showAssistPaths) {

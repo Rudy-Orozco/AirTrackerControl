@@ -39,7 +39,11 @@ import type { GroundTrack } from '../tracking/groundTracker'
 import type { AssistPath, RunwayGuide } from '../tracking/runwayAssist'
 import type { AirportLayout } from '../diorama/diorama'
 import { buildAirportModel, buildMapRunways } from './airportModel'
-import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, type Map3DTrafficStyle } from '../config/config'
+import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, PROCEDURES, type Map3DTrafficStyle } from '../config/config'
+import { proceduresToShow, type ProcedureMatch } from '../procedures/matcher'
+import { focusRoute } from '../procedures/route'
+import { drawWaypoint, legAltitude, procedureColor } from '../map/procedureLayer'
+import { pieceRole, procedurePieces, proceduresVersion, shownWaypoints } from '../procedures/procedures'
 import { bankOf, pitchOf } from '../diorama/diorama'
 import type { Line as MapLine } from '../map/basemap'
 import type { MapLayers } from '../map/mapLayers'
@@ -271,6 +275,10 @@ export class Map3D {
   private runwayGuides: ((now: number) => RunwayGuide[]) | null = null
   /** The localizers, glide paths and climb-outs of the runways in use (MAP.showRunwayGuides), by RunwayGuide.id. */
   private readonly guideLines = new Map<string, GuideLines>()
+  /** STARs, SIDs and approaches in the air at their altitudes (see updateProcedures), rebuilt when what's shown changes. */
+  private readonly procedureLines = new Group()
+  private procedureKey = ''
+  private procedureLabels: { at: Vector3; text: string; color: string; opacity: number; focused: boolean; size?: number; named?: boolean }[] = []
   /** Where each aircraft was drawn on screen last frame, for clicking on one. */
   private hits: { hex: string; x: number; y: number }[] = []
   private readonly crafts = new Map<Track, Craft>()
@@ -301,6 +309,7 @@ export class Map3D {
     this.ground.renderOrder = -1
     this.scene.add(this.world)
     this.world.add(this.ground)
+    this.world.add(this.procedureLines)
     this.drops.frustumCulled = false
     this.world.add(this.drops)
     this.dots.frustumCulled = false
@@ -617,6 +626,7 @@ export class Map3D {
     const onGround = this.updateGroundTraffic(groundList, flying, inside)
     this.updateGroundAssistPaths(allGround)
     this.updateRunwayGuides()
+    this.updateProcedures(focus ? { hex: focus.hex, pos: focus.pos } : null)
     const focusDrawn = !!focus && (flying.has(focus.hex) || onGround.has(focus.hex))
     this.updateFocusMesh(focus, focusAt, focusDrawn, trueScale, inside !== null)
     this.updateFocusRoute(focus, focusLocal)
@@ -631,6 +641,7 @@ export class Map3D {
 
     const ctx = this.labels
     ctx.clearRect(0, 0, this.width, this.height)
+    this.drawProcedureLabels()
     if (MAP.showLabels) drawTrackLabels(ctx, shown, MAP3D.traffic, screen)
     this.drawRouteLabels(routeLabels)
     if (focus?.route && this.focusRoute.visible) this.drawFocusRouteLabel(focus.route)
@@ -691,6 +702,7 @@ export class Map3D {
       ;(line.material as LineDashedMaterial).dispose()
     }
     for (const lines of this.guideLines.values()) disposeTree(lines.group)
+    disposeTree(this.procedureLines)
     this.controls.dispose()
     this.ground.material.map?.dispose()
     this.ground.material.alphaMap?.dispose()
@@ -971,6 +983,220 @@ export class Map3D {
       disposeTree(lines.group)
       this.guideLines.delete(id)
     }
+  }
+
+  /**
+   * STARs, SIDs and approaches (see proceduresToShow) as lines through their waypoints,
+   * each at the altitude the procedure has aircraft cross it at (filled in
+   * between, or estimated), so arrivals are seen to come down them: those
+   * picked in the panel, and the followed flight's as it flies it (see focusRoute).
+   */
+  private updateProcedures(followed: { hex: string; pos: LatLon } | null) {
+    const { shown, focus, approach } = PROCEDURES.show3d ? proceduresToShow(followed?.hex ?? null) : { shown: [], focus: null, approach: null }
+    // The followed flight's STAR or SID, and its approach, as it flies them.
+    const routes = followed
+      ? ([focus, approach].filter(Boolean) as ProcedureMatch[]).flatMap((m) => {
+          const route = focusRoute(m, followed.pos)
+          return route ? [{ route, match: m }] : []
+        })
+      : []
+    const key = [
+      proceduresVersion(),
+      PROCEDURES.opacity,
+      PROCEDURES.labels,
+      PROCEDURES.predict,
+      // Waypoints on their own (the Waypoints tab).
+      PROCEDURES.enabled && PROCEDURES.showWaypoints,
+      PROCEDURES.waypointColor,
+      PROCEDURES.waypointOpacity,
+      PROCEDURES.waypointSize,
+      PROCEDURES.waypointLabels,
+      PROCEDURES.waypointAltitude,
+      PROCEDURES.waypointFixedFt,
+      PROCEDURES.waypointDropLine,
+      PROCEDURES.waypointGroundDot,
+      MAP3D.altitudeScale,
+      // The ground under them (terrain, and the airport flattened into it).
+      this.terrain !== null,
+      this.flatRadius,
+      procedureColor('star'),
+      procedureColor('sid'),
+      ...routes.map(({ route, match: m }) => `${m.procedure.name}.${m.transition}.${m.runway}.${m.predicted}.${route.passed}.${route.branches.length}`),
+      ...shown.map(([p]) => p.name),
+    ].join('|')
+    if (key === this.procedureKey) return
+    this.procedureKey = key
+    disposeTree(this.procedureLines)
+    this.procedureLines.clear()
+    this.procedureLabels = []
+    const labelled = new Set<string>()
+    const polyline = (positions: number[], color: string, opacity: number, dashed: boolean) => {
+      const geometry = new BufferGeometry()
+      geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+      const material = dashed
+        ? new LineDashedMaterial({ color, transparent: true, depthWrite: false, opacity, dashSize: 0.4, gapSize: 0.4 })
+        : new LineBasicMaterial({ color, transparent: true, depthWrite: false, opacity })
+      const drawn = new Line(geometry, material)
+      if (dashed) drawn.computeLineDistances()
+      drawn.frustumCulled = false
+      this.procedureLines.add(drawn)
+    }
+    /**
+     * A line through `points`: in the air at its altitudes where they're charted;
+     * where they're only estimated, traced on the ground, with a faint curtain up
+     * to the estimate (and a fainter dashed line along its top).
+     */
+    const line = (route: { points: LatLon[]; alts: number[]; estimated: boolean[] }, color: string, opacity: number, dashed = false) => {
+      const { points, alts, estimated } = route
+      for (let i = 0; i < points.length - 1; ) {
+        // A run of legs all charted, or all estimated (a leg with either end estimated is).
+        const guess = estimated[i] || estimated[i + 1]
+        let j = i + 1
+        while (j < points.length - 1 && (estimated[j] || estimated[j + 1]) === guess) j++
+        const samples = this.pathSamples(points.slice(i, j + 1), alts.slice(i, j + 1))
+        if (!guess) polyline(samples.flatMap((p) => [p.x, p.y, p.air]), color, opacity, dashed)
+        else {
+          polyline(samples.flatMap((p) => [p.x, p.y, p.ground]), color, opacity, dashed)
+          polyline(samples.flatMap((p) => [p.x, p.y, p.air]), color, opacity * ESTIMATE_TOP_OPACITY, true)
+          this.procedureLines.add(curtainMesh(samples, color, opacity * ESTIMATE_CURTAIN_OPACITY))
+        }
+        i = j
+      }
+    }
+    const mark = (
+      route: { points: LatLon[]; alts: number[]; estimated: boolean[]; names: string[] },
+      color: string,
+      opacity: number,
+      focused: boolean,
+      altOf?: (name: string) => string | null,
+    ) =>
+      route.points.forEach((p, i) => {
+        const name = route.names[i]
+        if (labelled.has(name)) return
+        labelled.add(name)
+        const l = local(p)
+        const alt = altOf?.(name) ?? null
+        // On the ground under an estimated altitude, with the line traced there.
+        const z = route.estimated[i] ? this.onGround(l.x, l.y) : this.aboveGround(l.x, l.y, heightOf(route.alts[i]))
+        this.procedureLabels.push({ at: new Vector3(l.x, l.y, z), text: alt ? `${name} ${alt}` : name, color, opacity, focused })
+      })
+    const after = <T extends { points: LatLon[]; alts: number[]; estimated: boolean[]; names: string[] }>(r: T) => ({
+      points: r.points.slice(1),
+      alts: r.alts.slice(1),
+      estimated: r.estimated.slice(1),
+      names: r.names.slice(1),
+    })
+
+    // The followed flight's, as on the 2D map: the way it's come, fainter; ahead, bright; branches, dashed.
+    for (const { route, match: focus } of routes) {
+      const color = procedureColor(focus.kind)
+      const bright = Math.min(1, PROCEDURES.opacity * 2)
+      const altOf = (name: string) => legAltitude(focus.procedure, name)
+      line(route.flown, color, PROCEDURES.opacity * 0.6)
+      // Dashed while it's only predicted.
+      line(route.ahead, color, bright, focus.predicted)
+      for (const b of route.branches) line(b, color, PROCEDURES.opacity, true)
+      mark(after(route.ahead), color, 1, true, altOf)
+      mark(route.flown, color, 0.55, false)
+      for (const b of route.branches) mark(b, color, PROCEDURES.opacity * 1.4, false, altOf)
+    }
+    // Those picked in the panel.
+    for (const [procedure, kind] of shown) {
+      const color = procedureColor(kind)
+      for (const piece of procedurePieces(procedure)) {
+        // An approach's missed approach, dashed.
+        line(piece, color, PROCEDURES.opacity, pieceRole(piece) === 'missed')
+        mark(piece, color, PROCEDURES.opacity, false)
+      }
+    }
+    // Waypoints on their own (the Waypoints tab): at the altitude picked there, with a line down to a dot on the ground.
+    const drops: number[] = []
+    const dots: number[] = []
+    for (const w of PROCEDURES.show3d ? shownWaypoints() : []) {
+      if (labelled.has(w.name)) continue
+      const l = local(w.at)
+      const ground = this.onGround(l.x, l.y)
+      const feet = PROCEDURES.waypointAltitude === 'fixed' ? PROCEDURES.waypointFixedFt : PROCEDURES.waypointAltitude === 'charted' ? w.altFt : null
+      const z = feet === null ? ground : this.aboveGround(l.x, l.y, heightOf(feet))
+      if (z > ground) {
+        if (PROCEDURES.waypointDropLine) drops.push(l.x, l.y, ground, l.x, l.y, z)
+        if (PROCEDURES.waypointGroundDot) dots.push(l.x, l.y, ground)
+      }
+      this.procedureLabels.push({
+        at: new Vector3(l.x, l.y, z),
+        text: w.alt ? `${w.name} ${w.alt}` : w.name,
+        color: PROCEDURES.waypointColor,
+        opacity: PROCEDURES.waypointOpacity,
+        focused: false,
+        size: PROCEDURES.waypointSize,
+        named: PROCEDURES.waypointLabels,
+      })
+    }
+    if (drops.length > 0) {
+      const geometry = new BufferGeometry()
+      geometry.setAttribute('position', new BufferAttribute(new Float32Array(drops), 3))
+      const lines = new LineSegments(geometry, new LineBasicMaterial({ color: PROCEDURES.waypointColor, transparent: true, depthWrite: false, opacity: PROCEDURES.waypointOpacity * 0.5 }))
+      lines.frustumCulled = false
+      this.procedureLines.add(lines)
+    }
+    if (dots.length > 0) {
+      const geometry = new BufferGeometry()
+      geometry.setAttribute('position', new BufferAttribute(new Float32Array(dots), 3))
+      const points = new Points(
+        geometry,
+        new PointsMaterial({ color: PROCEDURES.waypointColor, size: WAYPOINT_DOT_PX, sizeAttenuation: false, transparent: true, depthWrite: false, opacity: PROCEDURES.waypointOpacity }),
+      )
+      points.frustumCulled = false
+      this.procedureLines.add(points)
+    }
+  }
+
+  /**
+   * A line through `points` at altitudes `alts` (feet), sampled for drawing:
+   * each leg split into steps of about a nautical mile, with its altitude eased
+   * along it and kept clear of the ground under it (`air`, see aboveGround, so a
+   * long leg doesn't cut through hills between its waypoints), and the ground
+   * itself just under it (`ground`).
+   */
+  private pathSamples(points: LatLon[], alts: number[]): { x: number; y: number; air: number; ground: number }[] {
+    const out: { x: number; y: number; air: number; ground: number }[] = []
+    const sample = (x: number, y: number, alt: number) => out.push({ x, y, air: this.aboveGround(x, y, heightOf(alt)), ground: this.onGround(x, y) })
+    points.forEach((p, i) => {
+      const b = local(p)
+      if (i === 0) return sample(b.x, b.y, alts[0])
+      const a = local(points[i - 1])
+      const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / PROCEDURE_STEP_NM))
+      for (let k = 1; k <= steps; k++) {
+        const t = k / steps
+        sample(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, alts[i - 1] + (alts[i] - alts[i - 1]) * t)
+      }
+    })
+    return out
+  }
+
+  /** Just above the ground at `x`, `y` (drawing units), for a line traced on it. */
+  private onGround(x: number, y: number) {
+    return this.groundZ(x, y) + (PROCEDURE_GROUND_FT / FT_PER_NM) * MAP3D.altitudeScale
+  }
+
+  /** Height `z` (drawing units), or PROCEDURE_CLEARANCE_FT above the ground at `x`, `y` if that's higher. */
+  private aboveGround(x: number, y: number, z: number) {
+    return Math.max(z, this.groundZ(x, y) + (PROCEDURE_CLEARANCE_FT / FT_PER_NM) * MAP3D.altitudeScale)
+  }
+
+  /** The waypoints (see updateProcedures) as on the 2D map: four-pointed stars, named. */
+  private drawProcedureLabels() {
+    if (this.procedureLabels.length === 0) return
+    const ctx = this.labels
+    const font = `${Math.max(MAP.labelSize - 3, 8)}px ${MAP.fontFamily}`
+    for (const { at, text, color, opacity, focused, size, named } of this.procedureLabels) {
+      const p = at.clone().setZ(at.z * this.vScale).project(this.camera)
+      if (p.z >= 1 || Math.abs(p.x) > 1 || Math.abs(p.y) > 1) continue
+      const showName = named ?? (PROCEDURES.labels || focused)
+      drawWaypoint(ctx, ((p.x + 1) / 2) * this.width, ((1 - p.y) / 2) * this.height, color, opacity, size ?? (focused ? 5 : 4), showName ? text : null, font)
+    }
+    ctx.globalAlpha = 1
+    ctx.font = labelFont()
   }
 
   private drawRouteLabels(items: { at: Vector3; text: string; color: string; opacity: number }[]) {
@@ -2027,6 +2253,32 @@ function disposeTree(root: Object3D) {
     if (Array.isArray(material)) material.forEach((m) => m.dispose())
     else material?.dispose()
   })
+}
+
+/** Procedures' lines are drawn in steps this long (nm), each kept PROCEDURE_CLEARANCE_FT clear of the ground under it... */
+const PROCEDURE_STEP_NM = 1
+const PROCEDURE_CLEARANCE_FT = 500
+/** ...or, where traced on the ground (altitude only estimated), this far above it. */
+const PROCEDURE_GROUND_FT = 40
+/** Under an estimated altitude: the curtain up to it, and the dashed line along its top, this opaque (times the line's). */
+const ESTIMATE_CURTAIN_OPACITY = 0.14
+/** The dot on the ground under a waypoint in the air (pixels). */
+const WAYPOINT_DOT_PX = 3
+const ESTIMATE_TOP_OPACITY = 0.45
+
+/** A see-through wall standing between the ground and the air along `samples` (see Map3D.pathSamples). */
+function curtainMesh(samples: { x: number; y: number; air: number; ground: number }[], color: string, opacity: number) {
+  const positions: number[] = []
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1]
+    const b = samples[i]
+    positions.push(a.x, a.y, a.ground, b.x, b.y, b.ground, b.x, b.y, b.air, a.x, a.y, a.ground, b.x, b.y, b.air, a.x, a.y, a.air)
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+  const mesh = new Mesh(geometry, new MeshBasicMaterial({ color, transparent: true, opacity, side: DoubleSide, depthWrite: false }))
+  mesh.frustumCulled = false
+  return mesh
 }
 
 /** Runways all within this far (nm) of the airport are its own, drawn apart from the ground picture (see mapRunways). */

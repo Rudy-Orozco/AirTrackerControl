@@ -56,7 +56,7 @@
   letter-spacing: 0.04em;
 }
 
-.axis-button.is-picking {
+.toolbar-button.is-picking {
   border-color: #4ea2ff;
   color: #4ea2ff;
 }
@@ -115,17 +115,93 @@
 
 .toolbar-button:hover,
 .settings-button.is-open,
-.terrain-button.is-on,
-.orbit-button.is-on,
-.axis-button.is-on,
-.fullscreen-button.is-on {
+.toolbar-button.is-on {
   color: var(--text);
 }
 
-.terrain-button.is-on,
-.orbit-button.is-on,
-.axis-button.is-on {
+.toolbar-button.is-on:not(.is-picking) {
   border-color: var(--text-dim);
+}
+
+/* A toolbar button with a short menu under it (the camera, and more). */
+.toolbar-menu {
+  position: relative;
+}
+
+.toolbar-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 250px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgb(8 12 20 / 0.96);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.5);
+}
+
+.toolbar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 13px / 1.3 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.toolbar-item:hover {
+  background: rgb(220 230 245 / 0.06);
+  color: var(--text);
+}
+
+.toolbar-item.is-on {
+  color: var(--text);
+}
+
+/* On: a dot at the end, so the menu shows what's in use. */
+.toolbar-item.is-on::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #4ea2ff;
+}
+
+.toolbar-item.is-picking {
+  color: #4ea2ff;
+}
+
+.toolbar-item-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+}
+
+.toolbar-item-text small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* The page zoom (desktop app), as a row of its own. */
+.toolbar-zoom {
+  justify-content: space-between;
+  cursor: default;
+}
+
+.toolbar-zoom:hover {
+  background: none;
 }
 
 .settings-button.is-open {
@@ -459,6 +535,20 @@
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
+}
+
+/* A line of status under a group's title, e.g. what's loaded. */
+.settings-note-line {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* A row of buttons under a group. */
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .settings-save .settings-action {

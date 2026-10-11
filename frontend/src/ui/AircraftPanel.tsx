@@ -17,6 +17,8 @@ import {
 } from '../tracking/selection'
 import type { Tracker } from '../tracking/tracker'
 import { useTick } from '../lib/useTick'
+import { procedureMatcher } from '../procedures/matcher'
+import { focusRoute } from '../procedures/route'
 import './AircraftPanel.css'
 
 /**
@@ -150,6 +152,21 @@ function Details({ located }: { located: Located }) {
     ['ICAO hex', info.hex.toUpperCase()],
     ['Category', info.emitterCategory ? `${info.emitterCategory} · ${CATEGORY_NAMES[info.emitterCategory] ?? ''}`.replace(/ · $/, '') : '—'],
   ]
+  // The STAR or SID it's flying, as its path shows (or the likeliest, until it does), and the next waypoint on it.
+  const procedure = procedureMatcher.likely(info.hex)
+  const approach = procedureMatcher.likelyApproach(info.hex)
+  const named = (m: NonNullable<typeof procedure>, label: string): [string, string] => [
+    `${label}${m.predicted ? ' · predicted' : ''}`,
+    `${m.procedure.name}${m.transition ? ` · ${m.transition}` : ''}`,
+  ]
+  if (procedure) items.push(named(procedure, procedure.kind === 'star' ? 'STAR' : 'SID'))
+  if (approach) items.push(named(approach, 'Approach'))
+  // The next waypoint: on its approach once it's seen flying it, else on its STAR or SID.
+  const flying = approach && !approach.predicted ? approach : (procedure ?? approach)
+  if (flying) {
+    const next = focusRoute(flying, located.pos)?.next
+    items.push(['Next fix', next ? `${next.name}${next.alt ? ` · ${next.alt}` : ''}` : '—'])
+  }
   return (
     <dl className="aircraft-details">
       {items.map(([label, value]) => (

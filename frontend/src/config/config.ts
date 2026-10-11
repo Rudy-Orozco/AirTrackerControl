@@ -463,6 +463,60 @@ export const STATS = {
   runwayHoldMs: 5 * 60_000,
 }
 
+// ---- Procedures: STARs, SIDs and approaches ----------------------------------------
+// From public/procedures/<CODE>.json (scripts/build_procedures.py), or imported in the settings.
+
+export const PROCEDURES = {
+  /**
+   * A study tool: the procedures button (picking which to show on the maps),
+   * and working out which one each arrival and departure is flying, shown for
+   * a followed flight (what it's flown, what's ahead, where it may branch off),
+   * with its details and in the stats.
+   */
+  enabled: false,
+  /**
+   * Work out which procedure each arrival and departure is flying (from its path,
+   * or predicted), for a followed flight's route, its details and the stats. Off,
+   * none of that runs: the panel and maps are just for study.
+   */
+  identify: true,
+  /**
+   * A followed flight's procedure narrowed down: its likeliest before its path
+   * shows one, and of its branches the one it's on or likely to take (by the
+   * runways in use). Off: only once its path shows one, with every branch.
+   */
+  predict: true,
+  /** Waypoints on their own (the panel's Waypoints tab): every one in the procedures, or only those picked there... */
+  showWaypoints: false,
+  waypointColor: '#b4c2dc',
+  waypointOpacity: 0.7,
+  /** ...their size (pixels), and names beside them... */
+  waypointSize: 3,
+  waypointLabels: true,
+  /**
+   * ...how high they're drawn on the 3D map: on the ground; at the altitude
+   * a procedure has aircraft cross them at (on the ground if none does); or all
+   * at waypointFixedFt...
+   */
+  waypointAltitude: 'charted' as 'ground' | 'charted' | 'fixed',
+  waypointFixedFt: 5000,
+  /** ...and, up there, a line down to the ground, and a dot where it meets it. */
+  waypointDropLine: true,
+  waypointGroundDot: true,
+  /** Drawn on the 2D map and the minimap... */
+  show2d: true,
+  /** ...and the 3D map (at their altitude restrictions). */
+  show3d: true,
+  /** Their colors: related to the arrival blue and departure orange, but apart from the aircraft. */
+  starColor: '#8f9bff',
+  sidColor: '#ffd166',
+  /** Approaches: the final stretch, from the STAR to the runway, with the missed approach. */
+  approachColor: '#6fe3c1',
+  /** Waypoint names beside them. */
+  labels: true,
+  opacity: 0.5,
+}
+
 // ---- Weather (METAR) --------------------------------------------------------------
 
 export const METAR = {
@@ -518,7 +572,7 @@ export const BOARD = {
 // ---- Saved settings -----------------------------------------------------------------
 
 /** The setting groups above, by name, so settings can be addressed by path. */
-export const CONFIG = { FEED, MOTION, MAP, MAP3D, MINIMAP, DIORAMA, STATS, METAR, ATIS, BOARD }
+export const CONFIG = { FEED, MOTION, MAP, MAP3D, MINIMAP, DIORAMA, STATS, PROCEDURES, METAR, ATIS, BOARD }
 
 /** The values above before any saved settings, for resetting. */
 export const CONFIG_DEFAULTS: typeof CONFIG = structuredClone(CONFIG)

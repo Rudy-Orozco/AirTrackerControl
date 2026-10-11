@@ -157,3 +157,50 @@
   text-transform: uppercase;
   color: var(--text-dim);
 }
+
+/* Ride along with the aircraft on the 3D map: from the cockpit or behind the tail. */
+.aircraft-views {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.aircraft-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--text);
+  font: 600 10px / 1 var(--sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.aircraft-view:hover:not(:disabled),
+.aircraft-view:focus-visible {
+  border-color: var(--text-dim);
+  background: rgb(255 255 255 / 0.08);
+}
+
+.aircraft-view.is-on {
+  border-color: #7dffa6;
+  color: #7dffa6;
+  background: rgb(125 255 166 / 0.08);
+}
+
+.aircraft-view:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* In the cockpit: just the flight and the way out, clear of the head-up display. */
+.aircraft-panel.is-cockpit .aircraft-header {
+  margin-bottom: 10px;
+}

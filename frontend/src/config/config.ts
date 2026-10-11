@@ -303,6 +303,23 @@ export const MAP3D = {
   orbitSpeed: 4,
   /** A faint heading tape along the top, with the camera's altitude beside it. */
   showHud: true,
+  /**
+   * The airport's runways, taxiways, aprons and buildings on the map at true size
+   * (flattening the terrain under them), drawn while the camera's within
+   * airportRangeNm of it; further out, or when off, the map's simple runways show instead.
+   */
+  showAirport: true,
+  /** Aircraft on the ground at the airport (taxiing and parked), drawn while the camera's within airportRangeNm of it. */
+  showGroundTraffic: true,
+  /** How close (nautical miles) the camera has to be to the airport for its model and ground traffic to be drawn. */
+  airportRangeNm: 30,
+  /**
+   * With the camera within trueSizeRangeNm of the airport, aircraft that close
+   * to it too (departing, or on final) are drawn at true size, matching its
+   * runways, rather than enlarged.
+   */
+  trueSizeNearAirport: true,
+  trueSizeRangeNm: 15,
 }
 
 // ---- 3D airport view ----------------------------------------------------------------

@@ -11,6 +11,9 @@ import type { LatLon, Tracker } from './tracker'
  * the maps, the board and the panel.
  */
 let selected: string | null = null
+/** Riding along with the selected aircraft, from its cockpit or behind its tail (the 3D map only); null to follow it from outside. */
+export type RideView = 'cockpit' | 'tail'
+let ride: RideView | null = null
 const listeners = new Set<() => void>()
 
 export function selectedAircraft() {
@@ -28,10 +31,30 @@ export function subscribeSelection(listener: () => void) {
   }
 }
 
-/** Picks an aircraft to show and follow, or lets go of it (null), sending the camera back. */
+export function rideView() {
+  return ride
+}
+
+export function useRideView() {
+  return useSyncExternalStore(subscribeSelection, rideView)
+}
+
+/** Picks an aircraft to show and follow, or lets go of it (null), sending the camera back. Stops riding along either way. */
 export function selectAircraft(hex: string | null) {
-  if (hex === selected) return
+  if (hex === selected && !ride) return
   selected = hex
+  ride = null
+  notify()
+}
+
+/** Rides along with the selected aircraft from its cockpit or behind its tail, or goes back to following it from outside (null). */
+export function setRideView(view: RideView | null) {
+  if (view === ride || (view && !selected)) return
+  ride = view
+  notify()
+}
+
+function notify() {
   for (const listener of listeners) listener()
 }
 

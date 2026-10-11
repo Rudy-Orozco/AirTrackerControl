@@ -1,27 +1,45 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 import { AIRPORT, MAP, MAP3D } from '../config/config'
+import { setSetting, VIEW_SETTING } from '../config/settings'
+import { leaveStreetView, useStreetView } from '../map3d/streetView'
 import type { BoardRow, BoardState } from '../board/flightBoard'
 import { formatLocalTime } from '../board/localTime'
 import type { GroundTracker } from '../tracking/groundTracker'
-import { locateAircraft, selectAircraft, useSelectedAircraft, type Located } from '../tracking/selection'
+import {
+  locateAircraft,
+  rideView,
+  selectAircraft,
+  setRideView,
+  useRideView,
+  useSelectedAircraft,
+  type Located,
+  type RideView,
+} from '../tracking/selection'
 import type { Tracker } from '../tracking/tracker'
 import { useTick } from '../lib/useTick'
 import './AircraftPanel.css'
 
 /**
  * Details of the aircraft picked on the map or the board (see selection.ts),
- * updated live while the map follows it. The close button or Escape lets it go
- * and sends the camera back; so does losing it from the feed for a while.
+ * updated live while the map follows it. The cockpit and tail buttons ride
+ * along with it on the 3D map (switching to it from the flat one). The close
+ * button or Escape lets it go and sends the camera back (Escape stops riding
+ * along first); so does losing it from the feed for a while.
  */
 export function AircraftPanel({ tracker, ground, board }: { tracker: Tracker; ground: GroundTracker; board: BoardState }) {
   const hex = useSelectedAircraft()
+  const ride = useRideView()
+  const inStreet = useStreetView().state === 'standing'
+  const cockpit = ride === 'cockpit'
   useTick(() => REFRESH_MS)
   const missingSince = useRef<number | null>(null)
 
   useEffect(() => {
     if (!hex) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') selectAircraft(null)
+      if (e.key !== 'Escape') return
+      if (rideView()) setRideView(null)
+      else selectAircraft(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -42,12 +60,36 @@ export function AircraftPanel({ tracker, ground, board }: { tracker: Tracker; gr
 
   if (!hex) return null
   return (
-    <aside className="aircraft-panel" aria-label="Selected aircraft">
+    <aside className={`aircraft-panel${cockpit ? ' is-cockpit' : ''}`} aria-label="Selected aircraft">
       <Header hex={hex} located={located} row={row} />
-      {located ? <Details located={located} /> : <p className="aircraft-lost">Signal lost · not on the map right now</p>}
+      {/* In the cockpit the head-up display shows the figures, so the panel shrinks out of its way. */}
+      {cockpit ? null : located ? <Details located={located} /> : <p className="aircraft-lost">Signal lost · not on the map right now</p>}
+      <div className="aircraft-views" role="group" aria-label="Ride along">
+        {RIDE_VIEWS.map(({ view, label, title, icon }) => (
+          <button
+            key={view}
+            type="button"
+            className={`aircraft-view${ride === view ? ' is-on' : ''}`}
+            aria-pressed={ride === view}
+            disabled={!located}
+            onClick={() => {
+              if (ride !== view && MAP.view !== '3d') setSetting(VIEW_SETTING, '3d')
+              // Riding along takes over from the street.
+              if (ride !== view) leaveStreetView()
+              setRideView(ride === view ? null : view)
+            }}
+            title={ride === view ? 'Back to following from outside (Esc)' : title}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d={icon} />
+            </svg>
+            {label}
+          </button>
+        ))}
+      </div>
       <footer className="aircraft-footer">
-        <span>Following</span>
-        <span>Esc to exit</span>
+        <span>{ride === 'cockpit' ? 'In the cockpit' : ride === 'tail' ? 'Behind the tail' : inStreet ? 'Watching from the street' : 'Following'}</span>
+        <span>{ride ? 'Esc to step out' : 'Esc to exit'}</span>
       </footer>
     </aside>
   )
@@ -131,6 +173,12 @@ function formatVerticalRate(fpm: number | null, onGround: boolean) {
   if (Math.abs(fpm) < 100) return 'Level'
   return `${fpm > 0 ? '▲' : '▼'} ${Math.abs(Math.round(fpm / 10) * 10).toLocaleString('en-US')} fpm`
 }
+
+/** The ways to ride along, with their buttons' icons: a HUD aircraft symbol, and an aircraft seen from behind. */
+const RIDE_VIEWS: { view: RideView; label: string; title: string; icon: string }[] = [
+  { view: 'cockpit', label: 'Cockpit', title: 'Ride along in the cockpit (3D map)', icon: 'M2 12h7M15 12h7M9 12l1.5 3h3L15 12M12 9v-5' },
+  { view: 'tail', label: 'Tail', title: 'Ride along behind the tail (3D map)', icon: 'M2 13l10-2 10 2M12 7v8M9 18l3-3 3 3' },
+]
 
 const KIND_LABELS = { arrival: 'Arrival', departure: 'Departure', other: 'Overflight' } as const
 

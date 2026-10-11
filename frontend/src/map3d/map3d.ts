@@ -6,7 +6,9 @@ import {
   Color,
   DirectionalLight,
   DoubleSide,
+  Euler,
   Fog,
+  Group,
   Line,
   LineBasicMaterial,
   LineLoop,
@@ -19,6 +21,7 @@ import {
   PlaneGeometry,
   Points,
   PointsMaterial,
+  Quaternion,
   Raycaster,
   SRGBColorSpace,
   Scene,
@@ -30,6 +33,10 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { modelGeometry } from '../aircraft/aircraftModels'
 import { aircraftSize } from '../aircraft/aircraftShapes'
+import type { Flight } from '../tracking/flights'
+import type { GroundTrack } from '../tracking/groundTracker'
+import type { AirportLayout } from '../diorama/diorama'
+import { buildAirportModel } from './airportModel'
 import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, type Map3DTrafficStyle } from '../config/config'
 import { bankOf, pitchOf } from '../diorama/diorama'
 import type { MapLayers } from '../map/mapLayers'
@@ -63,6 +70,17 @@ export interface Focus {
   altitude: number | null
   /** Its route to its destination (departures) or from its origin (arrivals), if known. */
   route: FocusRoute | null
+  heading: number
+  onGround: boolean
+  groundSpeed: number | null
+  /** Feet per minute, positive climbing. */
+  verticalRate: number | null
+  /** Nautical miles to the airport. */
+  distanceNm: number
+  /** Its details, for drawing it when it's on the ground (the map only draws airborne traffic). */
+  info: Flight
+  /** Riding along in its cockpit or behind its tail, rather than circling it. */
+  ride: 'cockpit' | 'tail' | null
 }
 
 /** One aircraft's scene objects. */
@@ -92,7 +110,21 @@ interface Craft {
 export class Map3D {
   private readonly renderer: WebGLRenderer
   private readonly scene = new Scene()
-  private readonly camera = new PerspectiveCamera(40, 1, 0.05, 2000)
+  /**
+   * The scenery: the ground and everything drawn at height but the aircraft
+   * themselves (trails, curtains, lines, markers). Squashed down (`vScale`)
+   * while riding along, so heights come out true rather than exaggerated; the
+   * aircraft stay outside it, placed at the squashed heights, so their models
+   * keep their shape.
+   */
+  private readonly world = new Group()
+  /** How much of the drawn heights to keep: 1 normally, down to true height (1 / MAP3D.altitudeScale) riding along. */
+  private vScale = 1
+  /** The airport itself, at true size (see airportModel.ts), once its layout has loaded. */
+  private airport: ReturnType<typeof buildAirportModel> | null = null
+  /** With terrain on, the ground is flat out to this far from the airport (nm), so the airport lies on it. */
+  private flatRadius = 0
+  private readonly camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, 2000)
   /** When the last frame was drawn, for a steady orbit speed whatever the frame rate. */
   private lastFrame = performance.now()
   private readonly controls: OrbitControls
@@ -154,6 +186,60 @@ export class Map3D {
     new BufferGeometry(),
     new LineDashedMaterial({ vertexColors: true, transparent: true, depthWrite: false, fog: false, dashSize: 0.6, gapSize: 0.45 }),
   )
+  /**
+   * Riding along with the followed aircraft, or moving into or out of it:
+   * `blend` runs from 0 (following from outside, at `offset` from it) to 1
+   * (riding along), and `view` from 0 (in the cockpit) to 1 (behind the tail).
+   * `attitude` and `chase` are the aircraft's smoothed orientation for the
+   * cockpit and tail cameras, and `body` its own. `look` turns the view away
+   * from straight ahead (degrees: yaw to the left, pitch up), and `zoom`
+   * magnifies it (`zoomShown` eases after it).
+   */
+  private riding: {
+    blend: number
+    view: number
+    mode: 'cockpit' | 'tail' | null
+    look: { yaw: number; pitch: number }
+    zoom: number
+    zoomShown: number
+    offset: Vector3
+    attitude: Quaternion | null
+    chase: Quaternion | null
+    body: Quaternion
+    at: Vector3
+    /** For the head-up display: flight path angle and angle of attack (degrees), and load factor (G). */
+    readout: { fpa: number; aoa: number; load: number }
+  } | null = null
+  /** The followed aircraft when it's on the ground, which the map doesn't otherwise draw. */
+  private readonly focusMesh = new Mesh(
+    new BufferGeometry(),
+    new MeshPhongMaterial({ flatShading: true, shininess: 40, transparent: true, side: DoubleSide, forceSinglePass: true }),
+  )
+  /**
+   * Standing in the street (see streetView.ts), or moving into or out of it:
+   * `blend` runs from 0 (where the camera was, `from`) to 1 (standing at
+   * `spot`, eye height above the ground). The view faces compass `heading` and
+   * `pitch` degrees up; `zoom` magnifies it (`zoomShown` eases after it). While
+   * `tracking`, it turns to keep the selected aircraft (`trackedHex`) in view.
+   */
+  private street: {
+    blend: number
+    spot: Vector2
+    heading: number
+    pitch: number
+    zoom: number
+    zoomShown: number
+    tracking: boolean
+    trackedHex: string | null
+    from: { position: Vector3; quaternion: Quaternion; target: Vector3 }
+  } | null = null
+  /** Picking where to stand in the street: a pin on the ground under the cursor shows where it'd be. */
+  private streetPlacing = false
+  private readonly streetPin = streetPinMarker()
+  /** Whether the camera was near the airport last frame (MAP3D.airportRangeNm), when street view is offered. */
+  private nearAirport = false
+  /** Aircraft on the ground at the airport, drawn while the camera is near it (MAP3D.showGroundTraffic). */
+  private readonly groundCrafts = new Map<GroundTrack, Mesh<BufferGeometry, MeshPhongMaterial>>()
   /** Where each aircraft was drawn on screen last frame, for clicking on one. */
   private hits: { hex: string; x: number; y: number }[] = []
   private readonly crafts = new Map<Track, Craft>()
@@ -182,17 +268,21 @@ export class Map3D {
     )
     // Draw the ground before everything else that's see-through (trails, curtains, aircraft).
     this.ground.renderOrder = -1
-    this.scene.add(this.ground)
+    this.scene.add(this.world)
+    this.world.add(this.ground)
     this.drops.frustumCulled = false
-    this.scene.add(this.drops)
+    this.world.add(this.drops)
     this.dots.frustumCulled = false
-    this.scene.add(this.dots)
+    this.world.add(this.dots)
     this.waypoints.frustumCulled = false
-    this.scene.add(this.waypoints)
-    for (const o of [this.axis, this.axisRing, this.ball, this.focusRoute]) {
+    this.world.add(this.waypoints)
+    this.streetPin.visible = false
+    this.world.add(this.streetPin)
+    for (const o of [this.axis, this.axisRing, this.ball, this.focusRoute, this.focusMesh]) {
       o.frustumCulled = false
       o.visible = false
-      this.scene.add(o)
+      if (o === this.focusMesh) this.scene.add(o)
+      else this.world.add(o)
     }
 
     // North-up map with z as height.
@@ -246,11 +336,32 @@ export class Map3D {
     for (const craft of this.crafts.values()) craft.builtAt = -1
   }
 
-  /** Height of the ground at a point (nautical miles east/north), drawn like aircraft heights; 0 without terrain. */
+  /**
+   * Height of the ground at a point (nautical miles east/north), drawn like
+   * aircraft heights; 0 without terrain. Level with the field under the
+   * airport, easing into the terrain around it.
+   */
   private groundZ(x: number, y: number) {
     if (!this.terrain) return 0
     const meters = elevationAt(this.terrain, CENTER.lat + y / 60, CENTER.lon + x / (60 * LON_SCALE))
-    return ((meters * FT_PER_M - AIRPORT_PRESET.elevationFt) / FT_PER_NM) * MAP3D.altitudeScale
+    const z = ((meters * FT_PER_M - AIRPORT_PRESET.elevationFt) / FT_PER_NM) * MAP3D.altitudeScale
+    if (!this.flatRadius) return z
+    return z * smoothstep(Math.min(Math.max((Math.hypot(x, y) - this.flatRadius) / FLAT_BLEND_NM, 0), 1))
+  }
+
+  /** Lays the airport (runways, taxiways, aprons and buildings) on the map, and flattens the terrain under it. */
+  setAirport(layout: AirportLayout) {
+    if (this.airport) {
+      this.world.remove(this.airport.group)
+      disposeTree(this.airport.group)
+    }
+    this.airport = buildAirportModel(layout, ([lon, lat]) => {
+      const { x, y } = local({ lat, lon })
+      return new Vector2(x, y)
+    })
+    this.world.add(this.airport.group)
+    this.flatRadius = this.airport.extentNm + FLAT_MARGIN_NM
+    if (this.terrain) this.buildGround()
   }
 
   /**
@@ -280,14 +391,20 @@ export class Map3D {
     this.home = null
     this.following = null
     this.returning = null
+    this.stepOut()
+    this.leaveStreet()
     this.controls.target.set(0, 0, 0)
     this.camera.position.copy(DEFAULT_CAMERA)
     this.controls.update()
     this.saveCamera()
   }
 
-  /** Draws one frame, following `focus` if given. Call after the tracker has stepped. */
-  render(tracks: Iterable<Track>, focus: Focus | null = null) {
+  /**
+   * Draws one frame, following `focus` if given, with `ground` (aircraft on the
+   * ground at the airport) when the camera's near it, and standing at
+   * `street` (see streetView.ts) if given. Call after the trackers have stepped.
+   */
+  render(tracks: Iterable<Track>, focus: Focus | null = null, ground: Iterable<GroundTrack> = [], street: { x: number; y: number } | null = null) {
     // Orbit (MAP3D.orbit): OrbitControls circles the target, holding tilt and distance.
     // A positive speed moves the camera clockwise seen from above.
     const now = performance.now()
@@ -298,13 +415,55 @@ export class Map3D {
     this.controls.autoRotate = MAP3D.orbit && !orbitAnchor().picking
     this.controls.autoRotateSpeed = ((MAP3D.orbitDirection === 'counterclockwise' ? -1 : 1) * MAP3D.orbitSpeed) / 6
     this.followAnchor(now)
-    const focusAt = focus ? new Vector3(local(focus.pos).x, local(focus.pos).y, heightOf(focus.altitude)) : null
-    this.followFocus(now, focus?.hex ?? null, focusAt)
-    this.controls.update(dt)
+    this.showStreetPin(now)
+    // Riding along or standing in the street, heights come down to true scale (as the
+    // camera goes in, so it isn't a jump), and aircraft to true size.
+    const altitudeScale = MAP3D.altitudeScale
+    const realism = smoothstep(Math.max(this.riding?.blend ?? 0, this.street?.blend ?? 0))
+    this.vScale = 1 + (1 / altitudeScale - 1) * realism
+    this.world.scale.z = this.vScale
+    // Buildings are built at true height; stretched like everything else's.
+    if (this.airport) this.airport.buildings.scale.z = altitudeScale
+    // The followed aircraft in the scenery's own heights, and where it's drawn (squashed with it).
+    const focusLocal = focus ? new Vector3(local(focus.pos).x, local(focus.pos).y, heightOf(focus.altitude)) : null
+    const focusAt = focusLocal ? focusLocal.clone().setZ(focusLocal.z * this.vScale) : null
+    const list = [...tracks]
+    // Picked another aircraft while riding along: straight out, then over to it from there.
+    if (this.riding && this.following?.hex !== focus?.hex) this.stepOut()
+    // Riding along takes over from the street: straight back to where the camera was first.
+    if (focus?.ride && this.street) this.leaveStreet()
+    if (focus && focusAt && (focus.ride || this.riding)) {
+      this.rideAlong(now, dt, focus, focusAt, list)
+    } else if (street || this.street) {
+      if (this.riding) this.stepOut()
+      this.standInStreet(dt, street, focus?.hex ?? null, focusAt)
+    } else {
+      // Let go while in the cockpit: back out to where the camera was following from first.
+      if (this.riding) this.stepOut()
+      this.followFocus(now, focus?.hex ?? null, focusAt)
+      this.controls.update(dt)
+    }
+    // Riding along, the followed aircraft isn't marked; from the cockpit, it isn't drawn at all.
+    const ridingWith = (this.riding?.blend ?? 0) > 0.5 ? focus?.hex : null
+    const inside = ridingWith && (this.riding?.view ?? 0) < 0.5 ? ridingWith : null
+    // Riding along or in the street, everything shrinks to its true size, as a person would see it.
+    const trueScale = smoothstep(Math.max(this.riding?.blend ?? 0, this.street?.blend ?? 0))
+    // Close to the airport, its model (and the aircraft on its ground) are drawn; further
+    // out they'd be specks, so it's left to the map's own simple runways and isn't drawn at all.
+    const cameraDistance = this.camera.position.length()
+    const nearAirport = cameraDistance < MAP3D.airportRangeNm
+    this.nearAirport = nearAirport || this.street !== null
+    // Closer still (MAP3D.trueSizeRangeNm), aircraft close to the airport (departing, or on
+    // final) are drawn at true size too, next to its runways; eased in and out so none pops.
+    const range = MAP3D.trueSizeRangeNm
+    const closeIn = (distance: number) => 1 - smoothstep(Math.min(Math.max((distance - range) / (range * TRUE_SIZE_EASE), 0), 1))
+    const closeCamera = MAP3D.trueSizeNearAirport ? closeIn(cameraDistance) : 0
+    if (this.airport) this.airport.group.visible = MAP3D.showAirport && nearAirport
+    this.world.updateMatrixWorld()
     // Fog only the far side of the map, however far out the camera is zoomed;
     // fixed distances would darken the whole map when zoomed out.
     const fog = this.scene.fog as Fog
-    const distance = this.camera.position.distanceTo(this.controls.target)
+    const distance = this.camera.position.distanceTo(this.controls.target) * (1 - trueScale)
     fog.near = distance + FETCH_RADIUS_NM * 0.6
     fog.far = distance + FETCH_RADIUS_NM * 2.2
     const seen = new Set<Track>()
@@ -319,7 +478,7 @@ export class Map3D {
     const markColors: number[] = []
     const color = new Color()
 
-    for (const t of tracks) {
+    for (const t of list) {
       const style = MAP3D.traffic[t.info.kind]
       if (t.opacity <= 0 || !style.show) continue
       seen.add(t)
@@ -332,11 +491,24 @@ export class Map3D {
       const size = aircraftSize(t.info.aircraftType, t.info.emitterCategory)
       const geometry = modelGeometry(size.kind, size.lengthM, size.spanM, t.info.aircraftType)
       if (craft.mesh.geometry !== geometry) craft.mesh.geometry = geometry
-      craft.mesh.position.set(x, y, z)
-      craft.mesh.scale.setScalar((this.modelLength(craft.mesh.position, size.lengthM) * style.scale) / size.lengthM)
-      craft.mesh.rotation.set(rad(pitchOf(t, MAP3D.altitudeScale)), rad(bankOf(t)), -rad(t.heading), 'ZXY')
+      craft.mesh.position.set(x, y, z * this.vScale)
+      const drawnNm = this.modelLength(craft.mesh.position, size.lengthM) * style.scale
+      const trueNm = size.lengthM / M_PER_NM
+      let lengthNm = drawnNm + (trueNm - drawnNm) * trueScale
+      // Near the airport with the camera: true size, but never smaller than a few pixels.
+      const close = closeCamera && closeCamera * closeIn(Math.hypot(x, y))
+      if (close) {
+        const smallest = MIN_MODEL_PX * this.worldPerPixel(this.camera.position.distanceTo(craft.mesh.position))
+        lengthNm += (Math.max(trueNm, smallest) - lengthNm) * close
+      }
+      craft.mesh.scale.setScalar(lengthNm / size.lengthM)
+      // Pitched to match how steeply its path is drawn: at true heights, riding along.
+      craft.mesh.rotation.set(rad(pitchOf(t, altitudeScale * this.vScale)), rad(bankOf(t)), -rad(t.heading), 'ZXY')
+      // Riding along: the true attitude the camera rides with, so the tail view lines up with the aircraft.
+      if (this.riding && t.info.hex === focus?.hex) craft.mesh.quaternion.copy(this.riding.body)
       craft.material.color.copy(color)
       craft.material.opacity = opacity
+      craft.mesh.visible = t.info.hex !== inside
 
       this.updateTrail(craft, t, style, color, opacity)
       craft.trail.visible = style.trail
@@ -362,6 +534,7 @@ export class Map3D {
 
       // Drop line from the aircraft to the ground.
       const groundZ = this.groundZ(x, y)
+      if (t.info.hex === ridingWith) continue
       if (style.dropLine) {
         drops.push(x, y, z, x, y, groundZ)
         dropColors.push(color.r, color.g, color.b, 0.35 * opacity, color.r, color.g, color.b, 0)
@@ -379,8 +552,13 @@ export class Map3D {
       }
     }
     for (const [t, craft] of this.crafts) if (!seen.has(t)) this.removeCraft(t, craft)
-    this.updateFocusRoute(focus, focusAt)
     this.hits = shown.map((t, i) => ({ hex: t.info.hex, ...screen[i] }))
+    // Those still flying (not just landed) are drawn by the airborne tracker above.
+    const flying = new Set([...seen].filter((t) => t.landedAt === null).map((t) => t.info.hex))
+    const onGround = this.updateGroundTraffic(MAP3D.showGroundTraffic && nearAirport ? ground : [], flying, inside)
+    const focusDrawn = !!focus && (flying.has(focus.hex) || onGround.has(focus.hex))
+    this.updateFocusMesh(focus, focusAt, focusDrawn, trueScale, inside !== null)
+    this.updateFocusRoute(focus, focusLocal)
 
     this.drops.geometry.setAttribute('position', new BufferAttribute(new Float32Array(drops), 3))
     this.drops.geometry.setAttribute('color', new BufferAttribute(new Float32Array(dropColors), 4))
@@ -395,8 +573,25 @@ export class Map3D {
     if (MAP.showLabels) drawTrackLabels(ctx, shown, MAP3D.traffic, screen)
     this.drawRouteLabels(routeLabels)
     if (focus?.route && this.focusRoute.visible) this.drawFocusRouteLabel(focus.route)
-    if (focusAt) this.drawFocus(focusAt)
-    if (MAP3D.showHud) this.drawHud()
+    if (focusAt && !ridingWith) this.drawFocus(focusAt)
+    // In the cockpit, its own head-up display replaces the heading tape.
+    // It's projected ahead of the pilot, so it fades as they look away from it or zoom in.
+    let hud = 0
+    if (this.riding) {
+      const { blend, view, look, zoomShown } = this.riding
+      const away = Math.max(Math.abs(look.yaw), Math.abs(look.pitch))
+      hud = ((blend - 0.8) / 0.2) * (1 - smoothstep(Math.min(view / 0.3, 1)))
+      hud *= 1 - smoothstep(Math.min(Math.max(away - 5, 0) / 15, 1))
+      hud *= 1 - smoothstep(Math.min((zoomShown - 1) / 0.5, 1))
+    }
+    if (hud > 0) this.drawCockpitHud(focus, hud)
+    else if (MAP3D.showHud) this.drawHud()
+    if (this.riding && this.riding.blend > 0.8) {
+      const { zoomShown, look } = this.riding
+      this.drawLookHint(zoomShown, Math.abs(look.yaw) > 1 || Math.abs(look.pitch) > 1, false)
+    } else if (this.street && this.street.blend > 0.8) {
+      this.drawLookHint(this.street.zoomShown, Math.abs(this.street.pitch) > 1, true)
+    }
   }
 
   /** The aircraft drawn nearest a screen position (client pixels), if one is close enough to count as clicked. */
@@ -429,9 +624,11 @@ export class Map3D {
   dispose() {
     if (this.controls.autoRotate) this.saveCamera()
     for (const [t, craft] of this.crafts) this.removeCraft(t, craft)
+    for (const mesh of this.groundCrafts.values()) mesh.material.dispose()
     this.controls.dispose()
     this.ground.material.map?.dispose()
     this.ground.material.alphaMap?.dispose()
+    if (this.airport) disposeTree(this.airport.group)
     this.renderer.dispose()
   }
 
@@ -460,14 +657,16 @@ export class Map3D {
       new LineDashedMaterial({ transparent: true, depthWrite: false, dashSize: 0.1, gapSize: 0.3 }),
     )
     for (const o of [trail, curtain, route, prediction, estimate]) o.frustumCulled = false
-    this.scene.add(mesh, trail, curtain, route, prediction, estimate)
+    this.scene.add(mesh)
+    this.world.add(trail, curtain, route, prediction, estimate)
     const craft: Craft = { mesh, material, trail, curtain, route, prediction, estimate, count: 0, capacity: 0, builtAt: -1, routeEnd: null }
     this.crafts.set(t, craft)
     return craft
   }
 
   private removeCraft(t: Track, craft: Craft) {
-    this.scene.remove(craft.mesh, craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate)
+    this.scene.remove(craft.mesh)
+    this.world.remove(craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate)
     craft.material.dispose()
     for (const o of [craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate]) {
       o.geometry.dispose()
@@ -611,7 +810,7 @@ export class Map3D {
     ctx.textAlign = 'center'
     ctx.textBaseline = 'bottom'
     for (const { at, text, color, opacity } of items) {
-      const p = at.clone().project(this.camera)
+      const p = at.clone().setZ(at.z * this.vScale).project(this.camera)
       if (p.z >= 1 || Math.abs(p.x) > 1 || Math.abs(p.y) > 1) continue
       ctx.globalAlpha = 0.6 * opacity
       ctx.fillStyle = color
@@ -632,14 +831,16 @@ export class Map3D {
    */
   private drawHud() {
     const ctx = this.labels
-    const offset = new Vector3().subVectors(this.controls.target, this.camera.position)
+    const offset = new Vector3()
+    this.camera.getWorldDirection(offset)
     const heading = ((Math.atan2(offset.x, offset.y) * 180) / Math.PI + 360) % 360
-    const feet = (this.camera.position.z * FT_PER_NM) / MAP3D.altitudeScale + AIRPORT_PRESET.elevationFt
+    const feet = (this.camera.position.z * FT_PER_NM) / (MAP3D.altitudeScale * this.vScale) + AIRPORT_PRESET.elevationFt
 
     const half = HUD_WIDTH / 2
     const cx = (this.width * (1 + this.shift.x)) / 2
     const roomy = cx - half > Math.min(336, this.width * 0.4 + 16) + 8 && cx + half + HUD_ALT_WIDTH < this.width - 310
-    const top = roomy ? 14 : 96
+    // Riding along, the hint on how to look around takes the top.
+    const top = roomy && !this.riding && !this.street ? 14 : 96
     const tickTop = top + 24
 
     ctx.save()
@@ -806,7 +1007,9 @@ export class Map3D {
    */
   private updateFocusRoute(focus: Focus | null, at: Vector3 | null) {
     const route = focus?.route
-    this.focusRoute.visible = !!route && !!at
+    // From the cockpit it would just be a pole out of the aircraft; behind the tail it leads the way.
+    const riding = this.riding ? smoothstep(this.riding.blend) * (1 - smoothstep(this.riding.view)) : 0
+    this.focusRoute.visible = !!route && !!at && riding < 0.5
     if (!route || !at) return
     const { points } = route
     const total = distanceNm(points[0], points[points.length - 1])
@@ -842,7 +1045,7 @@ export class Map3D {
     const pos = this.focusRoute.geometry.getAttribute('position') as BufferAttribute
     const screen: Point[] = []
     for (let i = 0; i < pos.count; i++) {
-      const p = new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).project(this.camera)
+      const p = new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i) * this.vScale).project(this.camera)
       if (p.z >= 1) break
       screen.push({ x: ((p.x + 1) / 2) * this.width, y: ((1 - p.y) / 2) * this.height })
     }
@@ -866,6 +1069,633 @@ export class Map3D {
     ctx.shadowColor = 'rgba(0, 0, 0, 0.9)'
     ctx.shadowBlur = 4
     ctx.fillText(route.label, at.x + (right ? -6 : 6), at.y - 6)
+    ctx.restore()
+  }
+
+  /**
+   * Riding along with the followed aircraft, from its cockpit or behind its
+   * tail. In the cockpit the camera turns with its heading, pitch and bank,
+   * lagging a little like a pilot's head, with a light buffet that's rougher low
+   * down and a rumble on the ground. Behind the tail it's a chase camera: it
+   * swings round after the aircraft more slowly, rolls only part way with it
+   * and looks down at it a little. Going in or out, or between the two, the
+   * camera glides; the field of view opens up to about what a person takes in.
+   */
+  private rideAlong(now: number, dt: number, focus: Focus, at: Vector3, tracks: Track[]) {
+    if (!this.riding) {
+      // Coming straight in (e.g. from the flat map): still remember where to go back to.
+      this.home ??= { position: this.camera.position.clone(), target: this.controls.target.clone() }
+      const offset = new Vector3().subVectors(this.camera.position, this.controls.target)
+      if (this.following?.hex !== focus.hex || offset.length() > FOLLOW_DISTANCE) offset.setLength(FOLLOW_DISTANCE)
+      this.following = { hex: focus.hex, start: now - FOLLOW_GLIDE_MS, from: at.clone(), fromDistance: offset.length() }
+      this.returning = null
+      this.riding = {
+        blend: 0,
+        view: focus.ride === 'tail' ? 1 : 0,
+        mode: focus.ride,
+        look: { yaw: 0, pitch: 0 },
+        zoom: 1,
+        zoomShown: 1,
+        offset,
+        attitude: null,
+        chase: null,
+        body: new Quaternion(),
+        at: at.clone(),
+        readout: { fpa: 0, aoa: 0, load: 1 },
+      }
+      this.controls.enabled = false
+    }
+    const riding = this.riding
+    riding.at.copy(at)
+    riding.blend = Math.min(Math.max(riding.blend + ((focus.ride ? 1 : -1) * dt) / COCKPIT_BLEND_S, 0), 1)
+    if (focus.ride) riding.view = Math.min(Math.max(riding.view + ((focus.ride === 'tail' ? 1 : -1) * dt) / RIDE_SWITCH_S, 0), 1)
+    // Switching between the cockpit and the tail starts looking straight ahead again.
+    if (focus.ride && focus.ride !== riding.mode) {
+      riding.mode = focus.ride
+      this.recenterLook()
+    }
+    riding.zoomShown += (riding.zoom - riding.zoomShown) * (1 - Math.exp((-dt * 1000) / ZOOM_EASE_MS))
+    if (riding.blend === 0 && !focus.ride) {
+      this.stepOut()
+      this.controls.update(dt)
+      return
+    }
+
+    // The aircraft's attitude, plus a little buffet. The nose sits the angle of attack
+    // above the flight path: true heights here, not exaggerated like the models' (a 3°
+    // approach would look like a dive), and higher when slow or pulling G in a turn.
+    const t = tracks.find((t) => t.info.hex === focus.hex && t.landedAt === null)
+    const airborne = !!t && !focus.onGround
+    const speed = focus.groundSpeed ?? 0
+    const fpa = t && airborne && speed > 0 ? deg(Math.atan2(t.climbing * 1000 * M_PER_FT, speed * KT_TO_MS)) : 0
+    const bank = t && airborne ? bankOf(t) : 0
+    const load = 1 / Math.cos(rad(bank))
+    const aoa = airborne ? angleOfAttack(speed, load) : 0
+    const pitch = fpa + aoa
+    riding.readout = { fpa, aoa, load }
+    riding.body.setFromEuler(new Euler(rad(pitch), rad(bank), -rad(focus.heading), 'ZXY'))
+    const s = now / 1000
+    const rough = focus.onGround
+      ? 0.06 * Math.min((focus.groundSpeed ?? 0) / 40, 1)
+      : TURBULENCE_DEG * ((focus.altitude ?? 0) < LOW_ALTITUDE_FT ? 1.6 : 1)
+    const bump = (a: number, b: number, c: number) => Math.sin(s * a + c) * 0.6 + Math.sin(s * b + c * 2.3) * 0.4
+    const shaken = new Quaternion().setFromEuler(
+      new Euler(rad(pitch + rough * bump(1.7, 4.3, 0.2)), rad(bank + rough * 1.4 * bump(1.3, 3.7, 1.1)), -rad(focus.heading + rough * 0.5 * bump(0.8, 2.1, 2.4)), 'ZXY'),
+    )
+
+    // Looking around (dragging): turned left or right about the aircraft's up, then up or down.
+    const look = new Quaternion().setFromEuler(new Euler(rad(riding.look.pitch), 0, rad(riding.look.yaw), 'ZXY'))
+
+    // In the cockpit: just above the aircraft's middle, looking out along its nose.
+    riding.attitude ??= shaken.clone()
+    riding.attitude.slerp(shaken, 1 - Math.exp((-dt * 1000) / COCKPIT_LAG_MS))
+    const cockpitAttitude = riding.attitude.clone().multiply(look).multiply(CAMERA_IN_BODY)
+    const cockpitEye = at.clone().add(new Vector3(0, 0, COCKPIT_EYE_NM).applyQuaternion(shaken))
+
+    // Behind the tail: a few lengths back and up, swinging round after it.
+    const chaseAim = new Quaternion().setFromEuler(new Euler(rad(pitch), rad(bank * TAIL_ROLL), -rad(focus.heading), 'ZXY'))
+    riding.chase ??= chaseAim.clone()
+    riding.chase.slerp(chaseAim, 1 - Math.exp((-dt * 1000) / TAIL_LAG_MS))
+    const length = aircraftSize(focus.info.aircraftType, focus.info.emitterCategory).lengthM / M_PER_NM
+    // Looking around swings the camera round the aircraft, never below the ground.
+    const orbit = riding.chase.clone().multiply(look)
+    const tailEye = at.clone().add(new Vector3(0, -length * TAIL_BACK, length * TAIL_UP).applyQuaternion(orbit))
+    tailEye.z = Math.max(tailEye.z, this.groundZ(tailEye.x, tailEye.y) * this.vScale + COCKPIT_EYE_NM)
+    const tailAttitude = orbit.multiply(LOOK_DOWN_AT_TAIL).multiply(CAMERA_IN_BODY)
+
+    const v = smoothstep(riding.view)
+    const eye = cockpitEye.lerp(tailEye, v)
+    const attitude = cockpitAttitude.slerp(tailAttitude, v)
+
+    // Following from outside, as the camera was before going in.
+    const outside = at.clone().add(riding.offset)
+    this.camera.position.copy(outside)
+    this.camera.lookAt(at)
+    const outsideAttitude = this.camera.quaternion.clone()
+    this.controls.target.copy(at)
+
+    const k = smoothstep(riding.blend)
+    this.camera.position.lerpVectors(outside, eye, k)
+    this.camera.quaternion.slerpQuaternions(outsideAttitude, attitude, k)
+    const wide = this.verticalFov(COCKPIT_HORIZONTAL_FOV + (TAIL_HORIZONTAL_FOV - COCKPIT_HORIZONTAL_FOV) * v)
+    // Zooming narrows it like binoculars, the same in every direction.
+    const rideFov = deg(2 * Math.atan(Math.tan(rad(wide) / 2) / riding.zoomShown))
+    this.camera.fov = CAMERA_FOV + (rideFov - CAMERA_FOV) * k
+    this.camera.near = k > 0.5 ? COCKPIT_NEAR : CAMERA_NEAR
+    this.updateProjection()
+  }
+
+  /** Whether the camera is riding along (or moving into or out of it), when clicks look around rather than pick aircraft. */
+  isRiding() {
+    return this.riding !== null
+  }
+
+  /** Whether dragging and scrolling look around and zoom (riding along, or standing in the street) rather than move the camera. */
+  isLooking() {
+    return this.riding !== null || this.street !== null
+  }
+
+  /** Whether the camera is near enough the airport to offer street view (or already in it). */
+  isNearAirport() {
+    return this.nearAirport
+  }
+
+  /** Whether the next click picks where to stand in the street (a pin follows the cursor until then). */
+  setStreetPlacing(placing: boolean) {
+    this.streetPlacing = placing
+  }
+
+  /**
+   * While picking where to stand: the pin on the ground under the cursor,
+   * gently pulsing, sized by the camera's distance so it reads at any zoom.
+   */
+  private showStreetPin(now: number) {
+    const at = this.streetPlacing && this.pointer ? this.pickGround(this.pointer.x, this.pointer.y) : null
+    this.streetPin.visible = at !== null
+    if (!at) return
+    this.streetPin.position.set(at.x, at.y, at.z / this.vScale)
+    this.streetPin.scale.setScalar(this.camera.position.distanceTo(at) * STREET_PIN_SIZE)
+    const ring = this.streetPin.children[0]
+    ring.scale.setScalar(1 + 0.25 * Math.sin(now / 250))
+  }
+
+  /** In the street, turns to the selected aircraft and keeps it in view (until the view's dragged). */
+  trackFromStreet() {
+    if (this.street) this.street.tracking = true
+  }
+
+  /**
+   * Riding along or in the street, a drag of `dx`, `dy` pixels turns the view:
+   * about as far as the picture moves under the pointer, less when zoomed in.
+   * In the cockpit it turns the pilot's head; behind the tail it swings the
+   * camera round the aircraft; in the street it turns your head (and stops
+   * tracking an aircraft).
+   */
+  lookAround(dx: number, dy: number) {
+    const perPixel = this.camera.fov / this.height
+    if (this.street) {
+      const street = this.street
+      street.tracking = false
+      street.heading = (((street.heading + dx * perPixel) % 360) + 360) % 360
+      street.pitch = Math.min(Math.max(street.pitch - dy * perPixel, -STREET_LOOK_PITCH), STREET_LOOK_PITCH)
+      return
+    }
+    if (!this.riding) return
+    const look = this.riding.look
+    look.yaw = ((look.yaw - dx * perPixel + 540) % 360) - 180
+    const [min, max] = this.riding.mode === 'tail' ? TAIL_LOOK_PITCH : COCKPIT_LOOK_PITCH
+    look.pitch = Math.min(Math.max(look.pitch - dy * perPixel, min), max)
+  }
+
+  /** Riding along or in the street, magnifies the view by `factor` (above 1 zooms in), within limits. */
+  zoomBy(factor: number) {
+    const view = this.riding ?? this.street
+    if (view) view.zoom = Math.min(Math.max(view.zoom * factor, 1), MAX_ZOOM)
+  }
+
+  /** Riding along, looks straight ahead again, unzoomed; in the street, back to level and unzoomed. */
+  recenterLook() {
+    if (this.street) {
+      this.street.zoom = 1
+      if (!this.street.tracking) this.street.pitch = 0
+      return
+    }
+    if (!this.riding) return
+    this.riding.look = { yaw: 0, pitch: 0 }
+    this.riding.zoom = 1
+  }
+
+  /**
+   * Standing in the street at `spot` (null to step back out): eye height above
+   * the ground, true heights and sizes all round, a person's field of view.
+   * Glides in from where the camera was, and back out to it. While tracking,
+   * turns smoothly to keep the selected aircraft (`hex`, drawn at `at`) in view.
+   */
+  private standInStreet(dt: number, spot: { x: number; y: number } | null, hex: string | null, at: Vector3 | null) {
+    if (spot && !this.street) {
+      const facing = new Vector3()
+      this.camera.getWorldDirection(facing)
+      this.street = {
+        blend: 0,
+        spot: new Vector2(spot.x, spot.y),
+        heading: ((deg(Math.atan2(facing.x, facing.y)) % 360) + 360) % 360,
+        pitch: 0,
+        zoom: 1,
+        zoomShown: 1,
+        tracking: hex !== null,
+        trackedHex: hex,
+        from: { position: this.camera.position.clone(), quaternion: this.camera.quaternion.clone(), target: this.controls.target.clone() },
+      }
+      this.controls.enabled = false
+    }
+    const street = this.street!
+    if (spot) street.spot.set(spot.x, spot.y)
+    street.blend = Math.min(Math.max(street.blend + ((spot ? 1 : -1) * dt) / STREET_BLEND_S, 0), 1)
+    if (street.blend === 0 && !spot) {
+      this.leaveStreet()
+      this.controls.update(dt)
+      return
+    }
+    // Picking an aircraft (on the map or the board) turns to it.
+    if (hex !== street.trackedHex) {
+      street.trackedHex = hex
+      street.tracking = hex !== null
+    }
+    street.zoomShown += (street.zoom - street.zoomShown) * (1 - Math.exp((-dt * 1000) / ZOOM_EASE_MS))
+
+    const eye = new Vector3(street.spot.x, street.spot.y, this.groundZ(street.spot.x, street.spot.y) * this.vScale + STREET_EYE_NM)
+    if (street.tracking && at) {
+      const to = at.clone().sub(eye)
+      const k = 1 - Math.exp((-dt * 1000) / STREET_TRACK_LAG_MS)
+      const heading = deg(Math.atan2(to.x, to.y))
+      const pitch = deg(Math.atan2(to.z, Math.hypot(to.x, to.y)))
+      street.heading = (((street.heading + ((((heading - street.heading) % 360) + 540) % 360 - 180) * k) % 360) + 360) % 360
+      street.pitch += (Math.min(Math.max(pitch, -STREET_LOOK_PITCH), STREET_LOOK_PITCH) - street.pitch) * k
+    }
+
+    // Where the camera stands and looks, then glided to from where it was.
+    const [h, p] = [rad(street.heading), rad(street.pitch)]
+    this.camera.position.copy(eye)
+    this.camera.lookAt(eye.clone().add(new Vector3(Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p))))
+    const standing = this.camera.quaternion.clone()
+    const k = smoothstep(street.blend)
+    this.camera.position.lerpVectors(street.from.position, eye, k)
+    this.camera.quaternion.slerpQuaternions(street.from.quaternion, standing, k)
+    const fov = deg(2 * Math.atan(Math.tan(rad(this.verticalFov(STREET_HORIZONTAL_FOV)) / 2) / street.zoomShown))
+    this.camera.fov = CAMERA_FOV + (fov - CAMERA_FOV) * k
+    this.camera.near = k > 0.5 ? STREET_NEAR : CAMERA_NEAR
+    this.updateProjection()
+  }
+
+  /** Straight back from the street to where the camera was before, and the camera controls back on. */
+  private leaveStreet() {
+    if (!this.street) return
+    const { from } = this.street
+    this.street = null
+    this.controls.target.copy(from.target)
+    this.camera.position.copy(from.position)
+    this.camera.fov = CAMERA_FOV
+    this.camera.near = CAMERA_NEAR
+    this.updateProjection()
+    this.controls.enabled = true
+  }
+
+  /**
+   * The vertical field of view (what the camera takes) that spans `horizontal`
+   * degrees across the part of the screen the board leaves uncovered.
+   */
+  private verticalFov(horizontal: number) {
+    const aspect = (this.width * (1 + this.shift.x)) / (this.height * (1 - this.shift.y))
+    const vertical = deg(2 * Math.atan(Math.tan(rad(horizontal) / 2) / aspect))
+    return Math.min(Math.max(vertical, RIDE_FOV_MIN), RIDE_FOV_MAX)
+  }
+
+  /**
+   * Draws the aircraft on the ground at the airport: true size, like the
+   * airport they stand on (never smaller than a few pixels), facing their
+   * heading, fainter once parked. Skips those still flying, and the one whose
+   * cockpit the camera is in. Returns which were drawn; they can be clicked too.
+   */
+  private updateGroundTraffic(tracks: Iterable<GroundTrack>, flying: Set<string>, inside: string | null) {
+    const drawn = new Set<string>()
+    const seen = new Set<GroundTrack>()
+    for (const g of tracks) {
+      const style = MAP3D.traffic[g.info.kind]
+      if (g.opacity <= 0 || !style.show || flying.has(g.info.hex) || g.info.hex === inside) continue
+      seen.add(g)
+      drawn.add(g.info.hex)
+      let mesh = this.groundCrafts.get(g)
+      if (!mesh) {
+        mesh = new Mesh(
+          new BufferGeometry(),
+          new MeshPhongMaterial({ flatShading: true, shininess: 40, transparent: true, side: DoubleSide, forceSinglePass: true }),
+        )
+        mesh.frustumCulled = false
+        this.scene.add(mesh)
+        this.groundCrafts.set(g, mesh)
+      }
+      const size = aircraftSize(g.info.aircraftType, g.info.emitterCategory)
+      const geometry = modelGeometry(size.kind, size.lengthM, size.spanM, g.info.aircraftType)
+      if (mesh.geometry !== geometry) mesh.geometry = geometry
+      const { x, y } = local(g.pos)
+      // On the ground, or still settling onto the runway just after touchdown.
+      const z = Math.max(heightOf(AIRPORT_PRESET.elevationFt + g.heightFt), this.groundZ(x, y)) * this.vScale
+      mesh.position.set(x, y, z)
+      const lengthNm = Math.max(size.lengthM / M_PER_NM, MIN_MODEL_PX * this.worldPerPixel(this.camera.position.distanceTo(mesh.position)))
+      mesh.scale.setScalar(lengthNm / size.lengthM)
+      // Lifted by its own height above its middle, so its wheels are on the ground.
+      mesh.position.z += lengthNm * GROUND_LIFT
+      mesh.rotation.set(0, 0, -rad(g.heading), 'ZXY')
+      mesh.material.color.set(style.color)
+      mesh.material.opacity = g.opacity * style.opacity * (g.parked ? PARKED_OPACITY : 1)
+
+      const p = mesh.position.clone().project(this.camera)
+      if (p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2) {
+        this.hits.push({ hex: g.info.hex, x: ((p.x + 1) / 2) * this.width, y: ((1 - p.y) / 2) * this.height })
+      }
+    }
+    for (const [g, mesh] of this.groundCrafts) {
+      if (seen.has(g)) continue
+      this.scene.remove(mesh)
+      mesh.material.dispose()
+      this.groundCrafts.delete(g)
+    }
+    return drawn
+  }
+
+  /**
+   * Draws the followed aircraft when the map doesn't (it's on the ground, where
+   * only the airport view shows traffic), so there's something to follow and to
+   * ride behind. Sized like the others; hidden from the cockpit.
+   */
+  private updateFocusMesh(focus: Focus | null, at: Vector3 | null, drawn: boolean, trueScale: number, inside: boolean) {
+    this.focusMesh.visible = !!focus && !!at && !drawn && !inside
+    if (!focus || !at || !this.focusMesh.visible) return
+    const size = aircraftSize(focus.info.aircraftType, focus.info.emitterCategory)
+    const geometry = modelGeometry(size.kind, size.lengthM, size.spanM, focus.info.aircraftType)
+    if (this.focusMesh.geometry !== geometry) this.focusMesh.geometry = geometry
+    // Lifted a hair so it sits on the ground rather than in it.
+    this.focusMesh.position.set(at.x, at.y, Math.max(at.z, this.groundZ(at.x, at.y) * this.vScale) + 0.002)
+    const style = MAP3D.traffic[focus.info.kind]
+    const drawnNm = this.modelLength(this.focusMesh.position, size.lengthM) * style.scale
+    this.focusMesh.scale.setScalar((drawnNm + (size.lengthM / M_PER_NM - drawnNm) * trueScale) / size.lengthM)
+    if (this.riding) this.focusMesh.quaternion.copy(this.riding.body)
+    else this.focusMesh.rotation.set(0, 0, -rad(focus.heading), 'ZXY')
+    this.focusMesh.material.color.set(style.color)
+    this.focusMesh.material.opacity = style.opacity
+  }
+
+  /** Straight back out to following from outside, and the camera controls back on. */
+  private stepOut() {
+    if (!this.riding) return
+    const { at, offset } = this.riding
+    this.riding = null
+    this.controls.target.copy(at)
+    this.camera.position.copy(at).add(offset)
+    this.camera.fov = CAMERA_FOV
+    this.camera.near = CAMERA_NEAR
+    this.updateProjection()
+    this.controls.enabled = true
+  }
+
+  /**
+   * A flight sim's head-up display in the cockpit. Fixed to the nose: the
+   * aircraft symbol, a speed tape (left), altitude tape with vertical speed
+   * (right), a heading tape (bottom) and a bank scale (top), with angle of
+   * attack, G, radio altitude and distance to the field beside them. Fixed to
+   * the world: the horizon and pitch ladder, and the flight path marker where
+   * the aircraft is actually going (the angle of attack below the nose).
+   */
+  private drawCockpitHud(focus: Focus | null, fade: number) {
+    if (!focus || !this.riding) return
+    const ctx = this.labels
+    const { aoa, load, fpa } = this.riding.readout
+    // Attitude as the camera shows it (smoothed, with the buffet), so the numbers match the view.
+    const euler = new Euler().setFromQuaternion(this.camera.quaternion.clone().multiply(BODY_IN_CAMERA), 'ZXY')
+    const bank = deg(euler.y)
+    const heading = (((-deg(euler.z)) % 360) + 360) % 360
+    const cam = this.camera.position
+    const toScreen = (dir: Vector3) => {
+      const p = cam.clone().addScaledVector(dir, HUD_RANGE_NM).project(this.camera)
+      return p.z < 1 ? { x: ((p.x + 1) / 2) * this.width, y: ((1 - p.y) / 2) * this.height } : null
+    }
+    /** A world direction at `headingDeg` and `elevationDeg` above the horizon. */
+    const direction = (headingDeg: number, elevationDeg: number) => {
+      const [h, e] = [rad(headingDeg), rad(elevationDeg)]
+      return new Vector3(Math.sin(h) * Math.cos(e), Math.cos(h) * Math.cos(e), Math.sin(e))
+    }
+
+    // Laid out in the part of the screen the board leaves uncovered.
+    const visibleWidth = this.width * (1 + this.shift.x)
+    const visibleHeight = this.height * (1 - this.shift.y)
+    const cx = visibleWidth / 2
+    const cy = visibleHeight / 2
+    const halfW = Math.min(visibleWidth * 0.42, 300)
+    const halfH = Math.min(visibleHeight * 0.36, 230)
+
+    ctx.save()
+    ctx.strokeStyle = ctx.fillStyle = COCKPIT_HUD_COLOR
+    ctx.lineWidth = 1.5
+    ctx.textBaseline = 'middle'
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.7)'
+    ctx.shadowBlur = 3
+    ctx.globalAlpha = fade * 0.9
+    const font = (px: number) => (ctx.font = `${px}px ${MAP.fontFamily}`)
+    const line = (x1: number, y1: number, x2: number, y2: number) => {
+      ctx.beginPath()
+      ctx.moveTo(x1, y1)
+      ctx.lineTo(x2, y2)
+      ctx.stroke()
+    }
+    const text = (s: string, x: number, y: number, align: CanvasTextAlign, px = 11) => {
+      font(px)
+      ctx.textAlign = align
+      ctx.fillText(s, x, y)
+    }
+    /** A boxed readout of a tape's current value. */
+    const box = (s: string, x: number, y: number, w: number, align: 'left' | 'right') => {
+      const left = align === 'left' ? x : x - w
+      ctx.save()
+      ctx.shadowBlur = 0
+      ctx.globalAlpha = fade * 0.75
+      ctx.fillStyle = 'rgba(0, 12, 4, 0.75)'
+      ctx.fillRect(left, y - 11, w, 22)
+      ctx.restore()
+      ctx.strokeRect(left, y - 11, w, 22)
+      text(s, left + w / 2, y + 1, 'center', 14)
+    }
+
+    // Horizon and pitch ladder, clipped to the middle between the tapes.
+    const nose = new Vector3()
+    this.camera.getWorldDirection(nose)
+    const noseHeading = deg(Math.atan2(nose.x, nose.y))
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(cx - halfW + 60, cy - halfH + 30, (halfW - 60) * 2, (halfH - 30) * 2 - 20)
+    ctx.clip()
+    for (let pitchDeg = -30; pitchDeg <= 30; pitchDeg += 5) {
+      const spread = pitchDeg === 0 ? 40 : 3.5
+      const a = toScreen(direction(noseHeading - spread, pitchDeg))
+      const b = toScreen(direction(noseHeading + spread, pitchDeg))
+      if (!a || !b) continue
+      ctx.globalAlpha = fade * (pitchDeg === 0 ? 0.85 : 0.6)
+      ctx.setLineDash(pitchDeg < 0 ? [6, 4] : [])
+      if (pitchDeg === 0) line(a.x, a.y, b.x, b.y)
+      else {
+        // Each rung has a gap in the middle and tips pointing toward the horizon.
+        const gap = 0.3
+        const tip = pitchDeg > 0 ? 6 : -6
+        const mx = (a.x + b.x) / 2
+        const my = (a.y + b.y) / 2
+        const ux = (b.x - a.x) / Math.hypot(b.x - a.x, b.y - a.y)
+        const uy = (b.y - a.y) / Math.hypot(b.x - a.x, b.y - a.y)
+        const len = Math.hypot(b.x - a.x, b.y - a.y) / 2
+        for (const side of [-1, 1]) {
+          const inner = { x: mx + side * ux * len * gap, y: my + side * uy * len * gap }
+          const outer = { x: mx + side * ux * len, y: my + side * uy * len }
+          ctx.beginPath()
+          ctx.moveTo(inner.x, inner.y)
+          ctx.lineTo(outer.x, outer.y)
+          ctx.lineTo(outer.x - uy * tip, outer.y + ux * tip)
+          ctx.stroke()
+          ctx.setLineDash([])
+          text(String(Math.abs(pitchDeg)), outer.x + side * ux * 14, outer.y + side * uy * 14, 'center', 10)
+          ctx.setLineDash(pitchDeg < 0 ? [6, 4] : [])
+        }
+      }
+    }
+    ctx.setLineDash([])
+    // Flight path marker: where the aircraft is going, its track and flight path angle.
+    const fpm = toScreen(direction(focus.heading, fpa))
+    if (fpm) {
+      ctx.globalAlpha = fade * 0.95
+      ctx.beginPath()
+      ctx.arc(fpm.x, fpm.y, 6, 0, Math.PI * 2)
+      ctx.stroke()
+      line(fpm.x - 18, fpm.y, fpm.x - 6, fpm.y)
+      line(fpm.x + 6, fpm.y, fpm.x + 18, fpm.y)
+      line(fpm.x, fpm.y - 6, fpm.x, fpm.y - 13)
+    }
+    ctx.restore()
+
+    // The aircraft symbol (the nose): fixed in the middle.
+    ctx.globalAlpha = fade * 0.9
+    ctx.beginPath()
+    ctx.moveTo(cx - 40, cy)
+    ctx.lineTo(cx - 14, cy)
+    ctx.lineTo(cx - 7, cy + 8)
+    ctx.lineTo(cx, cy)
+    ctx.lineTo(cx + 7, cy + 8)
+    ctx.lineTo(cx + 14, cy)
+    ctx.lineTo(cx + 40, cy)
+    ctx.stroke()
+
+    // Bank scale: ticks along an arc above the middle, and a pointer that stays toward the sky.
+    const arc = halfH - 8
+    for (const tick of [-60, -45, -30, -20, -10, 10, 20, 30, 45, 60]) {
+      const a = rad(tick)
+      const len = Math.abs(tick) % 30 === 0 ? 12 : 7
+      line(cx + Math.sin(a) * arc, cy - Math.cos(a) * arc, cx + Math.sin(a) * (arc + len), cy - Math.cos(a) * (arc + len))
+    }
+    ctx.beginPath()
+    ctx.moveTo(cx, cy - arc - 2)
+    ctx.lineTo(cx - 6, cy - arc - 12)
+    ctx.lineTo(cx + 6, cy - arc - 12)
+    ctx.closePath()
+    ctx.stroke()
+    {
+      const a = rad(-bank)
+      const r = arc - 3
+      const [px, py] = [cx + Math.sin(a) * r, cy - Math.cos(a) * r]
+      const [tx, ty] = [Math.sin(a), -Math.cos(a)]
+      ctx.beginPath()
+      ctx.moveTo(px, py)
+      ctx.lineTo(px - tx * 10 + ty * 6, py - ty * 10 - tx * 6)
+      ctx.lineTo(px - tx * 10 - ty * 6, py - ty * 10 + tx * 6)
+      ctx.closePath()
+      ctx.fill()
+      if (Math.abs(bank) >= 5) text(`${Math.round(Math.abs(bank))}°`, px - tx * 22, py - ty * 22, 'center', 10)
+    }
+
+    // Speed tape (left): ground speed, ±60 kt shown.
+    const tapeH = halfH * 1.3
+    const speed = focus.groundSpeed ?? 0
+    const sx = cx - halfW
+    const ktPx = tapeH / 120
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(sx - 60, cy - tapeH / 2, 80, tapeH)
+    ctx.clip()
+    line(sx, cy - tapeH / 2, sx, cy + tapeH / 2)
+    for (let v = Math.floor((speed - 60) / 10) * 10; v <= speed + 60; v += 10) {
+      if (v < 0) continue
+      const y = cy - (v - speed) * ktPx
+      line(sx, y, sx + (v % 20 === 0 ? 10 : 6), y)
+      if (v % 20 === 0) text(String(v), sx - 8, y, 'right', 11)
+    }
+    ctx.restore()
+    box(String(Math.round(speed)), sx - 2, cy, 54, 'right')
+    text('GS', sx - 2, cy - tapeH / 2 - 14, 'right', 11)
+    text(`AOA ${aoa.toFixed(1)}`, sx - 2, cy + tapeH / 2 + 16, 'right', 11)
+    text(`G ${load.toFixed(2)}`, sx - 2, cy + tapeH / 2 + 32, 'right', 11)
+
+    // Altitude tape (right): ±500 ft shown, vertical speed above, radio altitude below.
+    const altitude = focus.altitude ?? 0
+    const ax = cx + halfW
+    const ftPx = tapeH / 1000
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(ax - 20, cy - tapeH / 2, 90, tapeH)
+    ctx.clip()
+    line(ax, cy - tapeH / 2, ax, cy + tapeH / 2)
+    for (let v = Math.floor((altitude - 500) / 100) * 100; v <= altitude + 500; v += 100) {
+      const y = cy - (v - altitude) * ftPx
+      line(ax, y, ax - (v % 500 === 0 ? 10 : 6), y)
+      if (v % 200 === 0) text(v.toLocaleString('en-US'), ax + 8, y, 'left', 11)
+    }
+    ctx.restore()
+    box((Math.round(altitude / 20) * 20).toLocaleString('en-US'), ax + 2, cy, 66, 'left')
+    const vs = focus.onGround ? 0 : (focus.verticalRate ?? 0)
+    text(`VS ${vs > 0 ? '+' : vs < 0 ? '−' : ''}${Math.abs(Math.round(vs / 50) * 50).toLocaleString('en-US')}`, ax + 2, cy - tapeH / 2 - 14, 'left', 11)
+    // A vertical speed needle beside the tape: up to ±4,000 fpm.
+    const needle = Math.max(-1, Math.min(1, vs / 4000)) * (tapeH / 2 - 10)
+    ctx.lineWidth = 3
+    line(ax + 76, cy, ax + 76, cy - needle)
+    ctx.lineWidth = 1.5
+    const above = altitude - AIRPORT_PRESET.elevationFt
+    if (focus.onGround || above < RADIO_ALTITUDE_FT) {
+      text(`RA ${focus.onGround ? 0 : Math.max(0, Math.round(above / 10) * 10).toLocaleString('en-US')}`, ax + 2, cy + tapeH / 2 + 16, 'left', 11)
+    }
+    text(`${AIRPORT_PRESET.icao} ${focus.distanceNm.toFixed(1)} NM`, ax + 2, cy + tapeH / 2 + 32, 'left', 11)
+
+    // Heading tape (bottom): ±30° shown, labels every 10° in tens.
+    const hy = cy + halfH + 6
+    const degPx = (halfW * 1.2) / 60
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(cx - halfW * 0.6, hy - 4, halfW * 1.2, 40)
+    ctx.clip()
+    line(cx - halfW * 0.6, hy, cx + halfW * 0.6, hy)
+    for (let d = Math.ceil((heading - 30) / 5) * 5; d <= heading + 30; d += 5) {
+      const x = cx + (d - heading) * degPx
+      const major = d % 10 === 0
+      line(x, hy, x, hy + (major ? 9 : 5))
+      if (major) {
+        const h = ((d % 360) + 360) % 360
+        text(COMPASS[h] ?? String(h / 10).padStart(2, '0'), x, hy + 20, 'center', 10)
+      }
+    }
+    ctx.restore()
+    box(String(Math.round(heading) % 360).padStart(3, '0'), cx + 24, hy - 18, 48, 'right')
+    ctx.restore()
+  }
+
+  /**
+   * Riding along or in the street: how to look around, along the top of the view
+   * (clear of the info panel), and how far it's zoomed in.
+   */
+  private drawLookHint(zoomShown: number, turned: boolean, street: boolean) {
+    const ctx = this.labels
+    const cx = (this.width * (1 + this.shift.x)) / 2
+    const y = 22
+    ctx.save()
+    ctx.font = `10px ${MAP.fontFamily}`
+    ctx.letterSpacing = '1.5px'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = HUD_COLOR
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+    ctx.shadowBlur = 3
+    ctx.globalAlpha = 0.55
+    const parts = ['DRAG TO LOOK', 'SCROLL TO ZOOM']
+    if (street) parts.push('CLICK AN AIRCRAFT TO TRACK IT')
+    if (zoomShown > 1.05 || turned) parts.push(street ? 'DOUBLE-CLICK TO LEVEL' : 'DOUBLE-CLICK TO RECENTER')
+    ctx.fillText(parts.join(' · '), cx, y)
+    if (zoomShown > 1.05) {
+      ctx.globalAlpha = 0.9
+      ctx.font = `13px ${MAP.fontFamily}`
+      ctx.fillText(`${zoomShown < 10 ? zoomShown.toFixed(1) : Math.round(zoomShown)}×`, cx, y + 18)
+    }
     ctx.restore()
   }
 
@@ -946,8 +1776,8 @@ export class Map3D {
   /** Remembers the camera in this browser (also before a setup is saved); while following, where it'll go back to. */
   saveCamera() {
     try {
-      const p = this.home?.position ?? this.camera.position
-      const t = this.home?.target ?? this.controls.target
+      const p = this.home?.position ?? this.street?.from.position ?? this.camera.position
+      const t = this.home?.target ?? this.street?.from.target ?? this.controls.target
       localStorage.setItem(CAMERA_KEY, JSON.stringify({ position: [p.x, p.y, p.z], target: [t.x, t.y, t.z] }))
     } catch {
       // Storage unavailable: the view just won't be remembered.
@@ -1006,6 +1836,20 @@ function roundDot() {
   return new CanvasTexture(canvas)
 }
 
+/** Frees a group's geometries and materials. */
+function disposeTree(root: Group) {
+  root.traverse((o) => {
+    const { geometry, material } = o as Mesh
+    geometry?.dispose()
+    if (Array.isArray(material)) material.forEach((m) => m.dispose())
+    else material?.dispose()
+  })
+}
+
+/** With terrain on, the ground is level this far (nm) beyond the airport's furthest pavement or building, then eases into the terrain over the next stretch. */
+const FLAT_MARGIN_NM = 0.8
+const FLAT_BLEND_NM = 2
+
 /** Where the fade begins, as a fraction of the ground's width from its middle. */
 const EDGE_FADE_START = 0.3
 
@@ -1014,6 +1858,12 @@ const DEFAULT_CAMERA = new Vector3(0, -FETCH_RADIUS_NM * 1.25, FETCH_RADIUS_NM *
 const DEFAULT_DISTANCE = DEFAULT_CAMERA.length()
 /** Aircraft never get smaller than this on screen, however far out you zoom. */
 const MIN_MODEL_PX = 6
+/** True size near the airport eases out over this fraction of MAP3D.trueSizeRangeNm beyond it. */
+const TRUE_SIZE_EASE = 0.2
+/** Aircraft on the ground are raised this fraction of their length, so they stand on it rather than sink into it. */
+const GROUND_LIFT = 0.08
+/** Parked aircraft on the ground are drawn this much fainter. */
+const PARKED_OPACITY = 0.55
 
 const ROUTE_SEGMENTS = 40
 /** Ground grid resolution with terrain on: ~0.5 nm per cell over the area. */
@@ -1067,8 +1917,119 @@ const PICK_RADIUS_PX = 24
 const FOLLOW_GLIDE_MS = 1200
 const FOLLOW_DISTANCE = DEFAULT_DISTANCE * 0.3
 
+/** The camera's usual field of view (degrees) and near clipping distance (nm)... */
+const CAMERA_FOV = 40
+const CAMERA_NEAR = 0.05
+/**
+ * ...and riding along: set across the width of the view, as people judge it,
+ * then turned into the camera's vertical one for the screen's shape. Wide in the
+ * cockpit, near what both eyes take in without turning (a flight sim's "natural"
+ * setting); a little narrower behind the tail, like a chase camera.
+ */
+const COCKPIT_HORIZONTAL_FOV = 100
+const TAIL_HORIZONTAL_FOV = 80
+/** Never narrower or wider than this vertically, however tall or wide the view (a portrait screen would get a fisheye). */
+const RIDE_FOV_MIN = 45
+const RIDE_FOV_MAX = 85
+/** Riding along, close enough to see aircraft just ahead. */
+const COCKPIT_NEAR = 0.004
+/** How long going into or out of riding along takes, and switching between the cockpit and the tail (seconds). */
+const COCKPIT_BLEND_S = 1.4
+const RIDE_SWITCH_S = 1
+/** Behind the tail: how far back and up, in the aircraft's lengths, and how far it looks down at it (degrees). */
+const TAIL_BACK = 2.8
+const TAIL_UP = 0.55
+const TAIL_LOOK_DOWN_DEG = 6
+/** The tail camera swings round after the aircraft more slowly than a pilot's head (ms), and rolls only part way with it. */
+const TAIL_LAG_MS = 600
+const TAIL_ROLL = 0.4
+/**
+ * In the street: eye height (6 ft, in nm), a person's field of view, how close
+ * the camera can see (nm), how long stepping in or out takes (seconds), how
+ * far up or down you can look (degrees), and how far turning to follow an
+ * aircraft lags behind it (ms).
+ */
+const STREET_EYE_NM = (6 * 0.3048) / 1852
+const STREET_HORIZONTAL_FOV = 100
+const STREET_NEAR = 0.0008
+const STREET_BLEND_S = 1.6
+const STREET_LOOK_PITCH = 88
+const STREET_TRACK_LAG_MS = 180
+/** How far up and down (degrees) the view can turn: a pilot's head, or the tail camera swinging under and over. */
+const COCKPIT_LOOK_PITCH: [number, number] = [-70, 80]
+const TAIL_LOOK_PITCH: [number, number] = [-70, 45]
+/** Riding along, the most the view magnifies, and how quickly the zoom eases (ms). */
+const MAX_ZOOM = 100
+const ZOOM_EASE_MS = 120
+/** How far the camera's turning lags the aircraft's (ms), like a pilot's head settling. */
+const COCKPIT_LAG_MS = 220
+/** Eye height above the aircraft's middle (nm, about 50 ft). */
+const COCKPIT_EYE_NM = 0.008
+/** Size of the buffet in the air (degrees), more at low altitude. */
+const TURBULENCE_DEG = 0.25
+const LOW_ALTITUDE_FT = 10_000
+/** How far out the head-up display's horizon and pitch ladder are placed (nm, inside the far clipping plane). */
+const HUD_RANGE_NM = 400
+const COCKPIT_HUD_COLOR = '#7dffa6'
+/** A camera looks down its -z with +y up; turned a quarter about x, it looks along a model's nose (+y) with +z up. */
+const CAMERA_IN_BODY = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI / 2)
+const BODY_IN_CAMERA = CAMERA_IN_BODY.clone().invert()
+/** Tipped down about the aircraft's wings, so the tail camera looks down at it. */
+const LOOK_DOWN_AT_TAIL = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -rad(TAIL_LOOK_DOWN_DEG))
+/** The head-up display shows height above the field (radio altitude) below this many feet. */
+const RADIO_ALTITUDE_FT = 2500
+const M_PER_NM = 1852
+const M_PER_FT = 0.3048
+const KT_TO_MS = 0.514444
+
+/**
+ * A rough angle of attack (degrees) for an airliner at `speedKt` pulling `load`
+ * G: about 5° on approach, 2–3° climbing out, under 2° cruising fast.
+ */
+function angleOfAttack(speedKt: number, load: number) {
+  return Math.min(1.5 + 3.5 * load * (140 / Math.max(speedKt, 100)) ** 2, 14)
+}
+
+function deg(r: number) {
+  return (r * 180) / Math.PI
+}
+
+function smoothstep(x: number) {
+  return x * x * (3 - 2 * x)
+}
+
 const AXIS_COLOR = 0xe8eef8
 const AXIS_GLIDE_MS = 1200
+
+/** The street view pin, as a fraction of the camera's distance. */
+const STREET_PIN_SIZE = 0.035
+const STREET_PIN_COLOR = 0x7dffa6
+
+/**
+ * Where you'd stand in the street: a ring on the ground (its first child, so it
+ * can pulse) with a short post up from its middle and a ball on top, a person
+ * on a map pin. Unit-sized; scaled to the camera's distance.
+ */
+function streetPinMarker() {
+  const pin = new Group()
+  const ring = new LineLoop(ringGeometry(), new LineBasicMaterial({ color: STREET_PIN_COLOR, transparent: true, opacity: 0.9, depthTest: false }))
+  ring.scale.setScalar(0.5)
+  const post = new Line(
+    new BufferGeometry().setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0, 0, 1]), 3)),
+    new LineBasicMaterial({ color: STREET_PIN_COLOR, transparent: true, opacity: 0.9, depthTest: false }),
+  )
+  const head = new Mesh(new SphereGeometry(0.12, 12, 8), new MeshBasicMaterial({ color: STREET_PIN_COLOR, transparent: true, opacity: 0.95, depthTest: false }))
+  head.position.z = 1.1
+  const ringHolder = new Group()
+  ringHolder.add(ring)
+  pin.add(ringHolder, post, head)
+  pin.traverse((o) => {
+    o.frustumCulled = false
+    // Drawn over everything, so buildings and aircraft never hide it.
+    o.renderOrder = 10
+  })
+  return pin
+}
 
 /** A unit-tall vertical line, solid at the ground and fading out at the top. */
 function axisGeometry() {

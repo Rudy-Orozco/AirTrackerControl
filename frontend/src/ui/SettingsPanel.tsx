@@ -2,7 +2,8 @@ import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEv
 import { DIORAMA, MAP, MAP3D } from '../config/config'
 import { desktop } from '../lib/desktop'
 import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
-import { clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
+import { cancelPicking, clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
+import { toggleStreetView, useStreetView } from '../map3d/streetView'
 import type { FlightKind } from '../tracking/flights'
 import {
   getSetting,
@@ -66,7 +67,8 @@ export function SettingsPanel() {
   const terrain = MAP.terrain
   const orbit = MAP3D.orbit
   const { anchor, picking } = useOrbitAnchor()
-  const toolbar = useToolbarReveal(open || picking !== false)
+  const street = useStreetView()
+  const toolbar = useToolbarReveal(open || picking !== false || street.state !== 'off')
   return (
     <>
       <div className={`toolbar${toolbar.shown ? ' is-shown' : ''}`} onPointerDownCapture={toolbar.onPointerDown}>
@@ -89,6 +91,28 @@ export function SettingsPanel() {
           onClick={toggleAnchor}
         >
           <AxisIcon />
+        </button>
+      )}
+      {/* Street view: offered while the camera is near the airport. */}
+      {is3d && (street.available || street.state !== 'off') && (
+        <button
+          type="button"
+          className={`toolbar-button axis-button street-button${street.state === 'placing' ? ' is-on is-picking' : street.state === 'standing' ? ' is-on' : ''}`}
+          aria-label={street.state === 'off' ? 'Street view' : street.state === 'placing' ? 'Cancel street view' : 'Leave street view'}
+          aria-pressed={street.state !== 'off'}
+          title={
+            street.state === 'placing'
+              ? 'Click a spot on the ground at the airport to stand there (Esc to cancel)'
+              : street.state === 'standing'
+                ? 'Leave street view (Esc)'
+                : 'Street view: stand on the ground at the airport, 6 ft up, and watch the aircraft'
+          }
+          onClick={() => {
+            cancelPicking()
+            toggleStreetView()
+          }}
+        >
+          <PersonIcon />
         </button>
       )}
       {is3d && (
@@ -564,6 +588,16 @@ function AxisIcon() {
       <path d="M12 3v15" strokeDasharray="2.5 2.5" />
       <ellipse cx="12" cy="18" rx="7" ry="2.5" />
       <circle cx="12" cy="18" r="1" fill="currentColor" />
+    </svg>
+  )
+}
+
+/** A person standing on the ground. */
+function PersonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="5" r="2" />
+      <path d="M12 8v6M8.5 10.5L12 9l3.5 1.5M12 14l-2.5 5M12 14l2.5 5M5 20h14" />
     </svg>
   )
 }

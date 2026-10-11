@@ -1,14 +1,17 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { TAP_SLOP_PX } from '../lib/touch'
+import { isDoubleTap, TAP_SLOP_PX, type Tap } from '../lib/touch'
 import { uncoveredArea } from '../lib/layout'
+import { AIRPORT } from '../config/config'
+import { fetchAirportLayout } from '../diorama/diorama'
 import { Map3D } from './map3d'
 import { cancelPicking, orbitAnchor, plantAxis, setAnchorHeight, subscribeOrbitAnchor } from './orbitAnchor'
+import { leaveStreetView, setStreetAvailable, standAt, streetView, subscribeStreetView } from './streetView'
 import { watchMapLayers, type MapLayers } from '../map/mapLayers'
 import { labelFont } from '../map/renderer'
 import { RESET_CAMERA_EVENT, settingsVersion } from '../config/settings'
 import { STORE_CAMERA_EVENT } from '../config/profiles'
 import type { GroundTracker } from '../tracking/groundTracker'
-import { locateAircraft, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
+import { locateAircraft, rideView, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
 import type { Tracker } from '../tracking/tracker'
 import './AirTraffic3D.css'
 
@@ -17,7 +20,8 @@ import './AirTraffic3D.css'
  * for labels. Drag to orbit, right-drag to pan, scroll or pinch to zoom; the
  * camera is remembered. While orbiting, the axis button lets two clicks pick
  * the point the camera circles: an axis on the ground, then a height up it. Clicking an aircraft
- * (or picking one on the board) follows it until it's let go. Like the flat map, it draws outside
+ * (or picking one on the board) follows it until it's let go; riding along with it, dragging looks
+ * around and scrolling zooms. Like the flat map, it draws outside
  * React every frame and centers itself in the area the board (`overlay`) leaves
  * uncovered.
  */
@@ -62,8 +66,17 @@ export function AirTraffic3D({
     })
     document.fonts.load(labelFont()).then(redrawGround, () => {})
 
+    // The airport itself, laid on the map at true size.
+    const layoutRequest = new AbortController()
+    fetchAirportLayout(AIRPORT, layoutRequest.signal)
+      .then((layout) => map.setAirport(layout))
+      .catch((err) => {
+        if (!layoutRequest.signal.aborted) console.warn('Airport layout unavailable:', err)
+      })
+
     const reset = () => {
       selectAircraft(null)
+      leaveStreetView()
       map.resetCamera()
     }
     window.addEventListener(RESET_CAMERA_EVENT, reset)
@@ -114,9 +127,19 @@ export function AirTraffic3D({
       down = null
       if (moved > (e.pointerType === 'mouse' ? CLICK_SLOP_PX : TAP_SLOP_PX)) return
       if (orbitAnchor().picking) place(e.clientX, e.clientY)
-      else {
+      else if (streetView().state === 'placing') {
+        // Street view: a click on the ground picks where to stand.
+        const point = map.pickGround(e.clientX, e.clientY)
+        if (point) standAt({ x: point.x, y: point.y })
+      }
+      // Riding along, a click belongs to looking around (a double-click recenters), not picking.
+      else if (!map.isRiding()) {
         const hex = map.pickAircraft(e.clientX, e.clientY)
-        if (hex) selectAircraft(hex)
+        if (hex) {
+          selectAircraft(hex)
+          // In the street, turn to it and keep it in view.
+          map.trackFromStreet()
+        }
       }
     }
     const onCancel = () => {
@@ -128,16 +151,80 @@ export function AirTraffic3D({
     const onMove = (e: PointerEvent) => {
       map.setPointer({ x: e.clientX, y: e.clientY })
       if (e.pointerType === 'mouse' && e.buttons === 0) {
-        canvas.classList.toggle('is-over-aircraft', map.pickAircraft(e.clientX, e.clientY) !== null)
+        canvas.classList.toggle('is-over-aircraft', !map.isRiding() && map.pickAircraft(e.clientX, e.clientY) !== null)
       }
     }
     const onLeave = () => {
       if (!touchAim) map.setPointer(null)
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && orbitAnchor().picking) cancelPicking()
+      if (e.key !== 'Escape') return
+      if (orbitAnchor().picking) cancelPicking()
+      // Escape lets go of a selected aircraft first (the info panel), then steps out of the street.
+      else if (streetView().state === 'placing' || (streetView().state === 'standing' && !selectedAircraft())) leaveStreetView()
     }
-    const showPicking = () => canvas.classList.toggle('is-picking', orbitAnchor().picking !== false)
+
+    // Riding along with an aircraft or standing in the street (the camera controls are
+    // off): dragging looks around, scrolling or pinching zooms, and a double-click or
+    // double-tap looks straight ahead again. Riding along, other aircraft are picked
+    // from the board; in the street, clicking one turns to it.
+    const looking = new Map<number, { x: number; y: number }>()
+    let pinch: number | null = null
+    let lastTap: Tap | null = null
+    const spread = () => {
+      const [a, b] = [...looking.values()]
+      return Math.hypot(a.x - b.x, a.y - b.y)
+    }
+    const onLookDown = (e: PointerEvent) => {
+      if (!map.isLooking() || orbitAnchor().picking || (e.pointerType === 'mouse' && e.button !== 0)) return
+      canvas.setPointerCapture(e.pointerId)
+      looking.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      pinch = looking.size === 2 ? spread() : null
+    }
+    const onLookMove = (e: PointerEvent) => {
+      const last = looking.get(e.pointerId)
+      if (!last) return
+      looking.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (looking.size === 1) map.lookAround(e.clientX - last.x, e.clientY - last.y)
+      else if (looking.size === 2 && pinch) {
+        const now = spread()
+        map.zoomBy(now / pinch)
+        pinch = now
+      }
+    }
+    const onLookUp = (e: PointerEvent) => {
+      if (!looking.delete(e.pointerId)) return
+      pinch = null
+      // Touchscreens don't reliably send dblclick: two quick taps recenter too.
+      if (e.type === 'pointerup' && e.pointerType !== 'mouse') {
+        if (isDoubleTap(lastTap, e)) {
+          lastTap = null
+          map.recenterLook()
+        } else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY }
+      }
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (!map.isLooking()) return
+      e.preventDefault()
+      // Lines (Firefox) scroll in bigger steps than pixels.
+      const pixels = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+      map.zoomBy(Math.exp(-pixels * WHEEL_ZOOM))
+    }
+    const onDoubleClick = () => {
+      if (map.isLooking()) map.recenterLook()
+    }
+    canvas.addEventListener('pointerdown', onLookDown)
+    canvas.addEventListener('pointermove', onLookMove)
+    canvas.addEventListener('pointerup', onLookUp)
+    canvas.addEventListener('pointercancel', onLookUp)
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    canvas.addEventListener('dblclick', onDoubleClick)
+
+    // Crosshair while waiting for a click to place the orbit point or where to stand.
+    const showPicking = () => {
+      canvas.classList.toggle('is-picking', orbitAnchor().picking !== false || streetView().state === 'placing')
+      map.setStreetPlacing(streetView().state === 'placing')
+    }
     // Capture, so a touch aim turns the camera controls off before they see the touch.
     canvas.addEventListener('pointerdown', onDown, { capture: true })
     canvas.addEventListener('pointerup', onUp)
@@ -146,6 +233,7 @@ export function AirTraffic3D({
     canvas.addEventListener('pointerleave', onLeave)
     window.addEventListener('keydown', onKey)
     const stopAnchor = subscribeOrbitAnchor(showPicking)
+    const stopStreet = subscribeStreetView(showPicking)
     showPicking()
 
     // Ring spacing, radar opacity and label size are baked into the ground.
@@ -161,13 +249,31 @@ export function AirTraffic3D({
       const focus = hex ? locateAircraft(hex, tracker, ground) : null
       map.render(
         tracker.tracks.values(),
-        hex && focus ? { hex, pos: focus.pos, altitude: focus.altitude, route: routeOf(focus) } : null,
+        hex && focus
+          ? {
+              hex,
+              pos: focus.pos,
+              altitude: focus.altitude,
+              route: routeOf(focus),
+              heading: focus.heading,
+              onGround: focus.onGround,
+              groundSpeed: focus.info.groundSpeed,
+              verticalRate: focus.info.verticalRate,
+              distanceNm: focus.info.distanceNm,
+              info: focus.info,
+              ride: rideView(),
+            }
+          : null,
+        ground.tracks.values(),
+        streetView().state === 'standing' ? streetView().spot : null,
       )
+      setStreetAvailable(map.isNearAirport())
       frame = requestAnimationFrame(loop)
     })
 
     return () => {
       stopLayers()
+      layoutRequest.abort()
       cancelAnimationFrame(frame)
       observer.disconnect()
       window.removeEventListener(RESET_CAMERA_EVENT, reset)
@@ -177,9 +283,18 @@ export function AirTraffic3D({
       canvas.removeEventListener('pointercancel', onCancel)
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerleave', onLeave)
+      canvas.removeEventListener('pointerdown', onLookDown)
+      canvas.removeEventListener('pointermove', onLookMove)
+      canvas.removeEventListener('pointerup', onLookUp)
+      canvas.removeEventListener('pointercancel', onLookUp)
+      canvas.removeEventListener('wheel', onWheel)
+      canvas.removeEventListener('dblclick', onDoubleClick)
       window.removeEventListener('keydown', onKey)
       stopAnchor()
+      stopStreet()
       cancelPicking()
+      leaveStreetView()
+      setStreetAvailable(false)
       map.dispose()
     }
   }, [tracker, ground, overlay])
@@ -194,3 +309,5 @@ export function AirTraffic3D({
 
 /** A press that moves less than this before release counts as a click. */
 const CLICK_SLOP_PX = 5
+/** Riding along, how much each pixel scrolled zooms in or out. */
+const WHEEL_ZOOM = 0.0025

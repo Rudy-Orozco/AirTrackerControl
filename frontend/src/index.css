@@ -34,6 +34,10 @@ body,
 .app {
   position: relative;
   height: 100%;
+  /* Touchscreens: no double-tap zoom or grey tap flash; the maps and panels handle their own gestures. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
   /* Cap the board's text so it stays compact on a portrait screen. */
   --board-max-font: 1.2vh;
 }

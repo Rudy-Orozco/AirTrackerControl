@@ -5,6 +5,7 @@ import { createProjection, createView, drawTracks, labelFont, renderBackground }
 import { settingsVersion } from '../config/settings'
 import type { Tracker } from '../tracking/tracker'
 import { uncoveredArea } from '../lib/layout'
+import { isDoubleTap, TAP_SLOP_PX, type Tap } from '../lib/touch'
 import './AirTrafficCanvas.css'
 
 /**
@@ -86,14 +87,23 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
       dragging.dx = e.clientX - dragging.startX
       dragging.dy = e.clientY - dragging.startY
     }
-    const onPointerUp = () => {
+    const onPointerUp = (e: PointerEvent) => {
       if (!dragging) return
+      const tapped = Math.hypot(dragging.dx, dragging.dy) < TAP_SLOP_PX
       pan = { x: pan.x + dragging.dx, y: pan.y + dragging.dy }
       dragging = null
       canvas.classList.remove('is-dragging')
       placeView()
       redrawBackground()
+      // Touchscreens don't reliably send dblclick: two quick taps re-center too.
+      if (e.type === 'pointerup' && e.pointerType !== 'mouse' && tapped) {
+        if (isDoubleTap(lastTap, e)) {
+          lastTap = null
+          onDoubleClick()
+        } else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY }
+      }
     }
+    let lastTap: Tap | null = null
     const onDoubleClick = () => {
       pan = { x: 0, y: 0 }
       placeView()

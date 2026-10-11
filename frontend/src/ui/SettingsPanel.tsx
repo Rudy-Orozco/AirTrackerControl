@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { DIORAMA, MAP, MAP3D } from '../config/config'
 import { desktop } from '../lib/desktop'
 import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
@@ -66,11 +66,11 @@ export function SettingsPanel() {
   const terrain = MAP.terrain
   const orbit = MAP3D.orbit
   const { anchor, picking } = useOrbitAnchor()
-  // Buttons the 3D map adds to the left of the others, which the zoom control moves over for.
-  const extraButtons = is3d ? (orbit ? 2 : 1) : 0
+  const toolbar = useToolbarReveal(open || picking !== false)
   return (
     <>
-      {desktop && <ZoomControl shift={extraButtons} />}
+      <div className={`toolbar${toolbar.shown ? ' is-shown' : ''}`} onPointerDownCapture={toolbar.onPointerDown}>
+      {desktop && <ZoomControl />}
       {is3d && orbit && (
         <button
           type="button"
@@ -158,6 +158,7 @@ export function SettingsPanel() {
       >
         <GearIcon />
       </button>
+      </div>
       {open && (
         <aside className="settings-panel" aria-label="Settings">
           <header className="settings-header">
@@ -283,7 +284,7 @@ function SaveRow() {
  * − 100% + : page zoom, like Ctrl+scroll (desktop app only; a web page can't
  * change the browser's zoom). Clicking the percentage goes back to 100%.
  */
-function ZoomControl({ shift }: { shift: number }) {
+function ZoomControl() {
   const [factor, setFactor] = useState(1)
   useEffect(() => {
     desktop!.zoomFactor().then(setFactor, () => {})
@@ -292,7 +293,7 @@ function ZoomControl({ shift }: { shift: number }) {
   const zoom = (direction: number) => desktop!.zoom(direction).then(setFactor, () => {})
   const percent = `${Math.round(factor * 100)}%`
   return (
-    <div className="zoom-control" style={{ right: 222 + shift * 42 }} role="group" aria-label="Page zoom">
+    <div className="zoom-control" role="group" aria-label="Page zoom">
       <button type="button" aria-label="Zoom out" title="Zoom out (Ctrl+minus, Ctrl+scroll)" onClick={() => zoom(-1)}>
         −
       </button>
@@ -304,6 +305,41 @@ function ZoomControl({ shift }: { shift: number }) {
       </button>
     </div>
   )
+}
+
+/** How long the toolbar stays after a tap, once nothing in it is touched. */
+const TOOLBAR_TOUCH_MS = 5000
+/** Shown at first, so it's clear there's something in the corner. */
+const TOOLBAR_INTRO_MS = 4000
+
+/**
+ * The toolbar stays out of sight until the pointer is over its corner (CSS) or
+ * it's tapped: then it shows until it's left alone for a few seconds. `keep`
+ * holds it up (settings open, placing the orbit point). A tap on the hidden
+ * toolbar only reveals it, rather than pressing whatever is under the finger.
+ */
+function useToolbarReveal(keep: boolean) {
+  const [revealed, setRevealed] = useState(true)
+  const timer = useRef(0)
+  const hideAfter = (ms: number) => {
+    clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => setRevealed(false), ms)
+  }
+  useEffect(() => {
+    hideAfter(TOOLBAR_INTRO_MS)
+    return () => clearTimeout(timer.current)
+  }, [])
+  const shown = keep || revealed
+  const onPointerDown = (e: ReactPointerEvent) => {
+    if (e.pointerType === 'mouse') return
+    if (!shown) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    setRevealed(true)
+    hideAfter(TOOLBAR_TOUCH_MS)
+  }
+  return { shown, onPointerDown }
 }
 
 /** Whether the page is full screen, kept up to date (Esc can leave it too). */

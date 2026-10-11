@@ -294,6 +294,8 @@ export const MAP3D = {
   orbitDirection: 'clockwise' as 'clockwise' | 'counterclockwise',
   /** How fast it circles, in degrees per second. */
   orbitSpeed: 4,
+  /** A faint heading tape along the top, with the camera's altitude beside it. */
+  showHud: true,
 }
 
 // ---- 3D airport view ----------------------------------------------------------------

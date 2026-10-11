@@ -211,6 +211,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
             ],
           },
           { path: 'MAP3D.orbitSpeed', label: 'Orbit speed', type: 'range', min: 0.01, max: 30, step: 0.01, unit: '°/s' },
+          { path: 'MAP3D.showHud', label: 'Heading and altitude', hint: 'Where the camera faces, and how high it is', type: 'toggle' },
         ],
         action: { label: 'Reset camera', run: resetMapCamera } },
     ],

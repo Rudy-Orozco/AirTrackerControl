@@ -15,6 +15,7 @@ import {
 } from './diorama'
 import type { GroundTracker } from '../tracking/groundTracker'
 import { LockIcon } from '../ui/icons'
+import { isDoubleTap, type Tap } from '../lib/touch'
 import { LOCK_SETTING, RESET_DIORAMA_EVENT, setSetting, settingsVersion } from '../config/settings'
 import type { Tracker } from '../tracking/tracker'
 import './AirportDiorama.css'
@@ -52,6 +53,8 @@ const DRAG_DEG_PER_PANEL = 160
 const SPIN_FRICTION_MS = 350
 /** Each wheel notch grows or shrinks the panel by this factor. */
 const WHEEL_ZOOM = 1.08
+/** How long a touch shows the move and resize handles. */
+const TOUCH_REVEAL_MS = 4000
 
 type Corner = 'nw' | 'ne' | 'sw' | 'se'
 const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
@@ -187,28 +190,112 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
     return { left: rect.left, top: rect.top, size: rect.width }
   }
 
-  /** Drag on the cube: rotate and tilt (right-drag or Shift+drag moves it instead). */
+  /**
+   * Drag on the cube: rotate and tilt (right-drag or Shift+drag moves it instead).
+   * By touch: one finger rotates, two pinch to resize and drag to move, and a
+   * double tap resets the angle.
+   */
   const onCanvasPointerDown = (e: ReactPointerEvent) => {
     stopSpin()
+    if (e.pointerType !== 'mouse') {
+      const fingers = touchesRef.current
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      const lift = (ev: PointerEvent) => {
+        if (ev.pointerId !== e.pointerId) return
+        fingers.delete(e.pointerId)
+        window.removeEventListener('pointerup', lift)
+        window.removeEventListener('pointercancel', lift)
+      }
+      window.addEventListener('pointerup', lift)
+      window.addEventListener('pointercancel', lift)
+      if (fingers.size === 2) return startPinch()
+      if (fingers.size > 2) return
+      if (isDoubleTap(lastTapRef.current, e)) {
+        lastTapRef.current = null
+        resetAngle()
+        e.preventDefault()
+        return
+      }
+      lastTapRef.current = { t: e.timeStamp, x: e.clientX, y: e.clientY }
+    }
     if (e.button === 2 || e.button === 1 || e.shiftKey) startMove(e)
     else if (e.button === 0) startRotate(e)
   }
+
+  // Touch: fingers on the cube, the last tap (for double taps), and whether a pinch
+  // has taken over from the one-finger rotation.
+  const touchesRef = useRef(new Map<number, { x: number; y: number }>())
+  const lastTapRef = useRef<Tap | null>(null)
+  const pinchingRef = useRef(false)
+
+  /** Two fingers: their spread resizes the panel and their midpoint moves it. */
+  const startPinch = () => {
+    const fingers = touchesRef.current
+    const [a, b] = [...fingers.values()]
+    const start = currentPlacement()
+    const startDist = Math.max(Math.hypot(b.x - a.x, b.y - a.y), 1)
+    const startMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+    const ids = [...fingers.keys()]
+    const maxSize = maxPanelSize()
+    let latest = toFractions(start)
+    pinchingRef.current = true
+    lastTapRef.current = null
+    const move = (ev: PointerEvent) => {
+      if (!ids.includes(ev.pointerId) || !fingers.has(ev.pointerId)) return
+      fingers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY })
+      const [p, q] = ids.map((id) => fingers.get(id)!)
+      if (!p || !q) return
+      const size = clamp((start.size * Math.hypot(q.x - p.x, q.y - p.y)) / startDist, MIN_SIZE, maxSize)
+      const scale = size / start.size
+      const mid = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 }
+      latest = toFractions({ left: mid.x - (startMid.x - start.left) * scale, top: mid.y - (startMid.y - start.top) * scale, size })
+      setPlacement(latest)
+    }
+    const end = (ev: PointerEvent) => {
+      if (!ids.includes(ev.pointerId)) return
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      pinchingRef.current = false
+      save({ placement: latest })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+  }
+
+  /** By touch there's no hover to show the move and resize handles, so a touch shows them for a while. */
+  const [touched, setTouched] = useState(false)
+  const touchedTimer = useRef(0)
+  const revealControls = () => {
+    setTouched(true)
+    clearTimeout(touchedTimer.current)
+    touchedTimer.current = window.setTimeout(() => setTouched(false), TOUCH_REVEAL_MS)
+  }
+  useEffect(() => () => clearTimeout(touchedTimer.current), [])
 
   const startRotate = (e: ReactPointerEvent) => {
     const start = angleRef.current
     const degPerPx = DRAG_DEG_PER_PANEL / currentPlacement().size
     // Recent pointer samples, to carry on spinning at the release speed.
     const samples: { t: number; dx: number; dy: number }[] = []
+    let pinched = false
     setRotating(true)
     drag(
       e,
       (dx, dy) => {
+        // A second finger turned this into a pinch: leave the angle be.
+        if (pinchingRef.current || pinched) {
+          pinched = true
+          return
+        }
         angleRef.current = turned(start, dx * degPerPx, dy * degPerPx)
         samples.push({ t: performance.now(), dx, dy })
         if (samples.length > 6) samples.shift()
       },
       () => {
         setRotating(false)
+        if (pinched) return
         const [a, b] = [samples[0], samples[samples.length - 1]]
         const dt = b && a ? b.t - a.t : 0
         // Only a flick spins on: a release after holding still stops dead.
@@ -308,14 +395,19 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
   return (
     <>
       <Backdrop style={style} ref={backdropRef} />
-      <div ref={containerRef} className={`diorama${rotating ? ' is-rotating' : ''}${DIORAMA.locked ? ' is-locked' : ''}${pointerOver ? ' is-pointer-over' : ''}`} style={style}>
+      <div
+        ref={containerRef}
+        className={`diorama${rotating ? ' is-rotating' : ''}${DIORAMA.locked ? ' is-locked' : ''}${pointerOver ? ' is-pointer-over' : ''}${touched ? ' is-touched' : ''}`}
+        style={style}
+        onPointerDownCapture={(e) => e.pointerType !== 'mouse' && revealControls()}
+      >
         <canvas
           ref={canvasRef}
           onPointerDown={onCanvasPointerDown}
           onDoubleClick={resetAngle}
           onWheel={onWheel}
           onContextMenu={(e) => e.preventDefault()}
-          title="Drag to rotate · right-drag or Shift+drag to move · scroll to resize · double-click to reset"
+          title="Drag to rotate · right-drag or Shift+drag to move · scroll or pinch to resize · double-click or double-tap to reset"
         />
         <canvas ref={modelsRef} className="diorama-models" />
         {EDGES.map((edge) => (

@@ -71,7 +71,10 @@
 
 .diorama:hover .diorama-move,
 .diorama:hover .diorama-resize,
-.diorama:hover .diorama-reset {
+.diorama:hover .diorama-reset,
+.diorama.is-touched .diorama-move,
+.diorama.is-touched .diorama-resize,
+.diorama.is-touched .diorama-reset {
   opacity: 1;
 }
 
@@ -245,6 +248,7 @@
 
 .diorama:hover .diorama-lock,
 .diorama.is-pointer-over .diorama-lock,
+.diorama.is-touched .diorama-lock,
 .diorama-lock:hover,
 .diorama-lock:focus-visible {
   opacity: 1;
@@ -282,4 +286,42 @@
 .diorama.is-locked .diorama-reset,
 .diorama.is-locked::after {
   display: none;
+}
+
+/* Touchscreens: bigger handles and buttons for fingers. A locked panel lets touches
+   through, so its lock stays faintly visible to be found again. */
+@media (pointer: coarse) {
+  .diorama-move.is-top,
+  .diorama-move.is-bottom {
+    left: 36px;
+    right: 36px;
+    height: 28px;
+  }
+
+  .diorama-move.is-left,
+  .diorama-move.is-right {
+    top: 36px;
+    bottom: 36px;
+    width: 24px;
+  }
+
+  .diorama-resize {
+    width: 36px;
+    height: 36px;
+  }
+
+  .diorama-buttons {
+    top: 36px;
+    gap: 10px;
+  }
+
+  .diorama-reset,
+  .diorama-lock {
+    width: 36px;
+    height: 36px;
+  }
+
+  .diorama.is-locked .diorama-lock {
+    opacity: 0.5;
+  }
 }

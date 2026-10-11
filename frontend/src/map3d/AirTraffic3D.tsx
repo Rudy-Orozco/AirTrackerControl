@@ -56,33 +56,63 @@ export function AirTraffic3D({ tracker, overlay }: { tracker: Tracker; overlay: 
     window.addEventListener(STORE_CAMERA_EVENT, storeCamera)
 
     // Placing the orbit point: a click (not a drag, which still turns the view) on the
-    // ground plants the axis, then another picks how high up it the point sits.
+    // ground plants the axis, then another picks how high up it the point sits. By
+    // touch there's no hover to aim with, so the finger aims instead (the view holds
+    // still under it) and lifting it places the point.
     let down: { x: number; y: number } | null = null
+    let touchAim = false
     const onDown = (e: PointerEvent) => {
-      down = orbitAnchor().picking && e.button === 0 ? { x: e.clientX, y: e.clientY } : null
-    }
-    const onUp = (e: PointerEvent) => {
-      if (!down || !orbitAnchor().picking) return
-      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
       down = null
-      if (moved > CLICK_SLOP_PX) return
+      if (!orbitAnchor().picking) return
+      if (e.pointerType === 'mouse') {
+        if (e.button === 0) down = { x: e.clientX, y: e.clientY }
+        return
+      }
+      touchAim = true
+      map.setControlsEnabled(false)
+      map.setPointer({ x: e.clientX, y: e.clientY })
+    }
+    const place = (x: number, y: number) => {
       const { picking, foot } = orbitAnchor()
       if (picking === 'axis') {
-        const point = map.pickGround(e.clientX, e.clientY)
+        const point = map.pickGround(x, y)
         if (point) plantAxis({ x: point.x, y: point.y, z: point.z })
       } else if (picking === 'height' && foot) {
-        const z = map.pickHeight(e.clientX, e.clientY, foot)
+        const z = map.pickHeight(x, y, foot)
         if (z !== null) setAnchorHeight(z)
       }
     }
+    const onUp = (e: PointerEvent) => {
+      if (touchAim) {
+        touchAim = false
+        map.setControlsEnabled(true)
+        map.setPointer(null)
+        if (orbitAnchor().picking) place(e.clientX, e.clientY)
+        return
+      }
+      if (!down || !orbitAnchor().picking) return
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
+      down = null
+      if (moved <= CLICK_SLOP_PX) place(e.clientX, e.clientY)
+    }
+    const onCancel = () => {
+      if (!touchAim) return
+      touchAim = false
+      map.setControlsEnabled(true)
+      map.setPointer(null)
+    }
     const onMove = (e: PointerEvent) => map.setPointer({ x: e.clientX, y: e.clientY })
-    const onLeave = () => map.setPointer(null)
+    const onLeave = () => {
+      if (!touchAim) map.setPointer(null)
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && orbitAnchor().picking) cancelPicking()
     }
     const showPicking = () => canvas.classList.toggle('is-picking', orbitAnchor().picking !== false)
-    canvas.addEventListener('pointerdown', onDown)
+    // Capture, so a touch aim turns the camera controls off before they see the touch.
+    canvas.addEventListener('pointerdown', onDown, { capture: true })
     canvas.addEventListener('pointerup', onUp)
+    canvas.addEventListener('pointercancel', onCancel)
     canvas.addEventListener('pointermove', onMove)
     canvas.addEventListener('pointerleave', onLeave)
     window.addEventListener('keydown', onKey)
@@ -107,8 +137,9 @@ export function AirTraffic3D({ tracker, overlay }: { tracker: Tracker; overlay: 
       observer.disconnect()
       window.removeEventListener(RESET_CAMERA_EVENT, reset)
       window.removeEventListener(STORE_CAMERA_EVENT, storeCamera)
-      canvas.removeEventListener('pointerdown', onDown)
+      canvas.removeEventListener('pointerdown', onDown, { capture: true })
       canvas.removeEventListener('pointerup', onUp)
+      canvas.removeEventListener('pointercancel', onCancel)
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerleave', onLeave)
       window.removeEventListener('keydown', onKey)

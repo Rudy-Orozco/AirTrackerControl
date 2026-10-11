@@ -1,10 +1,42 @@
-/* Round buttons along the top-right corner: lock, then settings. */
-.toolbar-button {
+/*
+ * The row of round buttons in the top-right corner. Hidden until the pointer is
+ * over the corner or it's tapped (.is-shown); while hidden, the row itself
+ * still catches the hover or tap that brings it back.
+ */
+.toolbar {
   position: absolute;
-  top: 12px;
+  top: 0;
+  right: 0;
   z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+
+.toolbar > * {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s;
+}
+
+.toolbar.is-shown > * {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Hover only where there's a real pointer: on a touchscreen a tap would leave it stuck on. */
+@media (hover: hover) {
+  .toolbar:hover > * {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.toolbar-button {
   display: grid;
   place-items: center;
+  flex: none;
   width: 34px;
   height: 34px;
   padding: 0;
@@ -14,40 +46,14 @@
   color: var(--text-dim);
   cursor: pointer;
   transition:
+    opacity 0.25s,
     color 0.2s,
     transform 0.3s;
 }
 
-.settings-button {
-  right: 12px;
-}
-
 .view-button {
-  right: 54px;
   font: 600 11px var(--sans);
   letter-spacing: 0.04em;
-}
-
-.terrain-button {
-  right: 96px;
-}
-
-.fullscreen-button {
-  right: 138px;
-}
-
-.place-button {
-  right: 180px;
-}
-
-/* 3D map only; the zoom control moves over to make room. */
-.orbit-button {
-  right: 222px;
-}
-
-/* While orbiting: place the axis the camera circles. */
-.axis-button {
-  right: 264px;
 }
 
 .axis-button.is-picking {
@@ -57,16 +63,33 @@
 
 /* − 100% + page zoom (desktop app), left of the round buttons. */
 .zoom-control {
-  position: absolute;
-  top: 12px;
-  right: 222px;
-  z-index: 3;
   display: flex;
   height: 34px;
   border: 1px solid var(--line);
   border-radius: 17px;
   background: rgb(3 5 10 / 0.6);
   overflow: hidden;
+}
+
+/* Touchscreens: bigger buttons, easier to hit with a finger. */
+@media (pointer: coarse) {
+  .toolbar {
+    gap: 10px;
+  }
+
+  .toolbar-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .zoom-control {
+    height: 44px;
+    border-radius: 22px;
+  }
+
+  .settings-panel {
+    top: 66px;
+  }
 }
 
 .zoom-control button {
@@ -437,4 +460,32 @@
 
 .settings-save .settings-action {
   margin-top: 0;
+}
+
+/* Touchscreens: taller rows and tabs, so each control is easy to hit with a finger. */
+@media (pointer: coarse) {
+  .settings-row {
+    min-height: 44px;
+  }
+
+  .settings-tab {
+    padding: 11px 12px 12px;
+  }
+
+  .settings-kind {
+    padding: 10px 4px;
+  }
+
+  .settings-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .settings-action {
+    padding: 10px 14px;
+  }
+
+  .settings-range input[type='range'] {
+    height: 32px;
+  }
 }

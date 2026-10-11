@@ -355,6 +355,7 @@ export class Map3D {
     ctx.clearRect(0, 0, this.width, this.height)
     if (MAP.showLabels) drawTrackLabels(ctx, shown, MAP3D.traffic, screen)
     this.drawRouteLabels(routeLabels)
+    if (MAP3D.showHud) this.drawHud()
   }
 
   /**
@@ -566,6 +567,68 @@ export class Map3D {
   // ---- Camera -----------------------------------------------------------------------
 
   /**
+   * A minimal heading tape along the top of the visible map, like an aircraft
+   * HUD's: ticks every 5°, labels every 30°, the camera's heading over a caret
+   * in the middle, and its altitude (true scale, above sea level) beside it.
+   * Drops below the airport logo when there's no room between it and the toolbar.
+   */
+  private drawHud() {
+    const ctx = this.labels
+    const offset = new Vector3().subVectors(this.controls.target, this.camera.position)
+    const heading = ((Math.atan2(offset.x, offset.y) * 180) / Math.PI + 360) % 360
+    const feet = (this.camera.position.z * FT_PER_NM) / MAP3D.altitudeScale + AIRPORT_PRESET.elevationFt
+
+    const half = HUD_WIDTH / 2
+    const cx = (this.width * (1 + this.shift.x)) / 2
+    const roomy = cx - half > Math.min(336, this.width * 0.4 + 16) + 8 && cx + half + HUD_ALT_WIDTH < this.width - 310
+    const top = roomy ? 14 : 96
+    const tickTop = top + 24
+
+    ctx.save()
+    ctx.strokeStyle = ctx.fillStyle = HUD_COLOR
+    ctx.lineWidth = 1
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.letterSpacing = '1px'
+
+    // The tape, fading out toward its ends.
+    ctx.font = `10px ${MAP.fontFamily}`
+    for (let deg = Math.ceil((heading - half / HUD_PX_PER_DEG) / 5) * 5; deg <= heading + half / HUD_PX_PER_DEG; deg += 5) {
+      const x = cx + (deg - heading) * HUD_PX_PER_DEG
+      ctx.globalAlpha = HUD_OPACITY * (1 - ((x - cx) / half) ** 2)
+      const major = deg % 10 === 0
+      ctx.beginPath()
+      ctx.moveTo(x, tickTop)
+      ctx.lineTo(x, tickTop + (major ? 7 : 4))
+      ctx.stroke()
+      if (deg % 30 === 0) {
+        const d = ((deg % 360) + 360) % 360
+        ctx.fillText(COMPASS[d] ?? String(d / 10).padStart(2, '0'), x, tickTop + 17)
+      }
+    }
+
+    // Heading over a caret pointing at the tape.
+    ctx.globalAlpha = HUD_OPACITY * 1.4
+    ctx.font = `12px ${MAP.fontFamily}`
+    ctx.fillText(String(Math.round(heading) % 360).padStart(3, '0'), cx, top + 8)
+    ctx.beginPath()
+    ctx.moveTo(cx - 3.5, tickTop - 6)
+    ctx.lineTo(cx + 3.5, tickTop - 6)
+    ctx.lineTo(cx, tickTop - 1.5)
+    ctx.closePath()
+    ctx.fill()
+
+    // Altitude: flight level, with feet under it.
+    const ax = cx + half + 16
+    ctx.textAlign = 'left'
+    ctx.fillText(`FL${String(Math.max(0, Math.round(feet / 100))).padStart(3, '0')}`, ax, top + 8)
+    ctx.globalAlpha = HUD_OPACITY
+    ctx.font = `10px ${MAP.fontFamily}`
+    ctx.fillText(`${Math.max(0, Math.round(feet / 10) * 10).toLocaleString('en-US')} FT`, ax, tickTop + 4)
+    ctx.restore()
+  }
+
+  /**
    * While orbiting around a point: glides the camera over when a new one is
    * placed (keeping its angle and distance) and keeps panning off so it stays
    * in the middle. Draws the axis while one is being placed, and flashes it
@@ -629,6 +692,11 @@ export class Map3D {
       this.ball.scale.setScalar(distance * 0.004 * (1 + shown.pulse))
       this.ball.material.opacity = shown.opacity
     }
+  }
+
+  /** Turns dragging, pinching and scrolling the camera on or off (off while a finger aims the orbit point). */
+  setControlsEnabled(enabled: boolean) {
+    this.controls.enabled = enabled
   }
 
   /**
@@ -798,6 +866,14 @@ function setPathLine(
   material.color.copy(color)
   material.opacity = opacity
 }
+
+const HUD_COLOR = '#e8eef8'
+const HUD_OPACITY = 0.5
+/** Width of the heading tape and the room the altitude beside it needs, in pixels. */
+const HUD_WIDTH = 260
+const HUD_ALT_WIDTH = 90
+const HUD_PX_PER_DEG = 3
+const COMPASS: Record<number, string> = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }
 
 const AXIS_COLOR = 0xe8eef8
 const AXIS_GLIDE_MS = 1200

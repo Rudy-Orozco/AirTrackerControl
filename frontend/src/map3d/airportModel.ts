@@ -63,25 +63,26 @@ export function buildAirportModel(layout: AirportLayout, toLocal: (p: [number, n
   const lights: number[] = []
   const thresholdLights: number[] = []
   for (const runway of layout.runways) {
-    const [a, b] = local(runway.line)
+    // A runway's line can have points along it, not just its two ends.
+    const path = along(local(runway.line))
+    if (path.length === 0) continue
     const width = runway.widthM / M_PER_NM
-    pavement.segment(a, b, width, 0)
-    const along = b.clone().sub(a)
-    const length = along.length()
-    if (length === 0) continue
-    const dir = along.clone().divideScalar(length)
-    const side = new Vector2(-dir.y, dir.x)
+    for (let i = 1; i < path.points.length; i++) pavement.segment(path.points[i - 1], path.points[i], width, 0)
     // Centerline: dashes down the middle.
-    for (let d = THRESHOLD_LENGTH_M / M_PER_NM; d + DASH_M / M_PER_NM < length; d += (DASH_M + GAP_M) / M_PER_NM) {
-      markings.segment(a.clone().addScaledVector(dir, d), a.clone().addScaledVector(dir, d + DASH_M / M_PER_NM), STRIPE_M / M_PER_NM, 0)
+    for (let d = THRESHOLD_LENGTH_M / M_PER_NM; d + DASH_M / M_PER_NM < path.length; d += (DASH_M + GAP_M) / M_PER_NM) {
+      markings.segment(path.at(d).point, path.at(d + DASH_M / M_PER_NM).point, STRIPE_M / M_PER_NM, 0)
     }
     // Edge lines, and edge lights just outside them.
     for (const s of [-1, 1]) {
-      const offset = side.clone().multiplyScalar((s * (width - STRIPE_M / M_PER_NM)) / 2)
-      markings.segment(a.clone().add(offset), b.clone().add(offset), STRIPE_M / M_PER_NM, 0)
-      const lightOffset = side.clone().multiplyScalar(s * (width / 2 + 3 / M_PER_NM))
-      for (let d = 0; d <= length; d += LIGHT_SPACING_M / M_PER_NM) {
-        const p = a.clone().addScaledVector(dir, d).add(lightOffset)
+      for (let i = 1; i < path.points.length; i++) {
+        const [a, b] = [path.points[i - 1], path.points[i]]
+        const dir = b.clone().sub(a).normalize()
+        const offset = new Vector2(-dir.y, dir.x).multiplyScalar((s * (width - STRIPE_M / M_PER_NM)) / 2)
+        markings.segment(a.clone().add(offset), b.clone().add(offset), STRIPE_M / M_PER_NM, 0)
+      }
+      for (let d = 0; d <= path.length; d += LIGHT_SPACING_M / M_PER_NM) {
+        const { point, dir } = path.at(d)
+        const p = point.add(new Vector2(-dir.y, dir.x).multiplyScalar(s * (width / 2 + 3 / M_PER_NM)))
         lights.push(p.x, p.y, 0)
       }
     }
@@ -161,6 +162,25 @@ const MARKING_COLOR = 0xc9d0dc
 const EDGE_LIGHT_COLOR = 0xfff1d0
 const THRESHOLD_LIGHT_COLOR = 0x6dff9a
 const BUILDING_COLORS = { terminal: 0x7d8899, hangar: 0x5d6675 }
+
+/**
+ * A line through `points` measured along its length: `at(d)` is the point `d`
+ * along it and the direction it runs there.
+ */
+function along(points: Vector2[]) {
+  const cumulative = [0]
+  for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1] + points[i].distanceTo(points[i - 1]))
+  const length = cumulative[cumulative.length - 1] ?? 0
+  const at = (d: number) => {
+    let i = 1
+    while (i < points.length - 1 && cumulative[i] < d) i++
+    const [a, b] = [points[i - 1], points[i]]
+    const span = cumulative[i] - cumulative[i - 1]
+    const f = span > 0 ? Math.min(Math.max((d - cumulative[i - 1]) / span, 0), 1) : 0
+    return { point: a.clone().lerp(b, f), dir: b.clone().sub(a).normalize() }
+  }
+  return { points, length, at }
+}
 
 /** Quads along lines, merged into one geometry. */
 class Ribbons {

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import type { FlightKind } from '../tracking/flights'
 import { AIRPORT, CONFIG_DEFAULTS, getConfigValue, loadSavedSettings, PRESETS, setConfigValue, SETTINGS_KEY } from './config'
 
 /**
@@ -71,13 +72,39 @@ const HOURS = { scale: 3_600_000, unit: 'h' }
 export interface SettingGroup {
   title: string
   settings: Setting[]
+  /** Settings of the kind of traffic picked at the top of the tab (none for kinds it returns nothing for). */
+  perKind?: (kind: FlightKind) => Setting[]
   action?: { label: string; run: () => void }
 }
+
+export const KINDS: FlightKind[] = ['arrival', 'departure', 'other']
+export const KIND_LABELS: Record<FlightKind, string> = { arrival: 'Arrivals', departure: 'Departures', other: 'Other' }
+
+/** Builds a group's per-kind settings, with `p` turning "color" into e.g. "MAP.traffic.arrival.color". */
+function perKind(view: 'MAP' | 'MAP3D' | 'DIORAMA', settings: (p: (key: string) => string, kind: FlightKind) => Setting[]) {
+  return (kind: FlightKind) => settings((key) => `${view}.traffic.${kind}.${key}`, kind)
+}
+
+/** Show, color, opacity and size, in every view. */
+const styleSettings = (p: (key: string) => string): Setting[] => [
+  { path: p('show'), label: 'Show', type: 'toggle' },
+  { path: p('color'), label: 'Color', type: 'color' },
+  { path: p('opacity'), label: 'Opacity', type: 'range', min: 0, max: 1, step: 0.05 },
+  { path: p('scale'), label: 'Size', hint: 'Times the size above', type: 'range', min: 0.25, max: 3, step: 0.05, unit: '×' },
+]
+
+/** Trail settings on both maps. */
+const trailSettings = (p: (key: string) => string): Setting[] => [
+  { path: p('trail'), label: 'Show trail', type: 'toggle' },
+  { path: p('trailSeconds'), label: 'Length', type: 'range', min: 0, max: 600, step: 10, unit: 's' },
+  { path: p('trailOpacity'), label: 'Opacity', type: 'range', min: 0, max: 1, step: 0.05 },
+  { path: p('trailSmoothing'), label: 'Smoothing', type: 'range', min: 0, max: 16, step: 1 },
+]
 
 /** The panel's tabs, each a few groups. */
 export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
   {
-    title: 'Map',
+    title: '2D Map',
     groups: [
       {
         title: 'View',
@@ -92,30 +119,27 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
         title: 'Aircraft',
         settings: [
           { path: 'MAP.planeSize', label: 'Size on the 2D map', type: 'range', min: 4, max: 20, step: 1, unit: 'px' },
-          { path: 'MAP.arrivalColor', label: 'Arrivals', type: 'color' },
-          { path: 'MAP.departureColor', label: 'Departures', type: 'color' },
-          { path: 'MAP.otherColor', label: 'Other traffic', type: 'color' },
-          { path: 'MAP.otherOpacity', label: 'Other traffic opacity', hint: 'White aircraft, labels and trails, in every view', type: 'range', min: 0, max: 1, step: 0.05 },
           { path: 'MAP.showPredictions', label: 'Show predicted positions', hint: 'Path to the next update for arrivals and departures, 2D and 3D', type: 'toggle' },
         ],
+        perKind: perKind('MAP', styleSettings),
       },
       {
         title: 'Labels',
         settings: [
-          { path: 'MAP.showLabels', label: 'Show labels', type: 'toggle' },
+          { path: 'MAP.showLabels', label: 'Show labels', hint: 'All kinds, 2D and 3D', type: 'toggle' },
           { path: 'MAP.labelSize', label: 'Text size', type: 'range', min: 8, max: 20, step: 1, unit: 'px' },
           { path: 'MAP.hideCrowdedLabels', label: 'Hide crowded labels', hint: 'Background traffic only', type: 'toggle' },
           { path: 'MAP.labelLeaderLength', label: 'Leader line length', type: 'range', min: 0, max: 80, step: 2, unit: 'px' },
         ],
+        perKind: perKind('MAP', (p) => [{ path: p('labels'), label: 'Show', type: 'toggle' }]),
       },
       {
         title: 'Trails',
-        settings: [
-          { path: 'MAP.trailSeconds', label: 'Length', type: 'range', min: 0, max: 600, step: 10, unit: 's' },
-          { path: 'MAP.trailWidth', label: 'Width', hint: '2D map', type: 'range', min: 0.5, max: 5, step: 0.25, unit: 'px' },
-          { path: 'MAP.trailOpacity', label: 'Opacity', type: 'range', min: 0, max: 1, step: 0.05 },
-          { path: 'MAP.trailSmoothing', label: 'Smoothing', type: 'range', min: 0, max: 16, step: 1 },
-        ],
+        settings: [],
+        perKind: perKind('MAP', (p) => [
+          ...trailSettings(p),
+          { path: p('trailWidth'), label: 'Width', type: 'range', min: 0.5, max: 5, step: 0.25, unit: 'px' },
+        ]),
       },
       {
         title: 'Weather radar',
@@ -137,20 +161,40 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'MAP3D.fixedScreenSize', label: 'Same size at any zoom', hint: 'Off: aircraft grow as you zoom in', type: 'toggle' },
           { path: 'MAP3D.altitudeScale', label: 'Altitude exaggeration', hint: 'Terrain too', type: 'range', min: 1, max: 12, step: 0.5, unit: '×' },
         ],
+        perKind: perKind('MAP3D', (p) => [
+          ...styleSettings(p),
+          { path: p('labels'), label: 'Labels', hint: 'If labels are on in 2D Map', type: 'toggle' },
+        ]),
+      },
+      { title: 'Trails', settings: [], perKind: perKind('MAP3D', trailSettings) },
+      {
+        title: 'Curtains',
+        settings: [],
+        perKind: perKind('MAP3D', (p) => [
+          { path: p('curtain'), label: 'Show', hint: 'Shade from the trail down to the ground', type: 'toggle' },
+          { path: p('curtainOpacity'), label: 'Opacity', type: 'range', min: 0.02, max: 0.5, step: 0.02 },
+        ]),
       },
       {
-        title: 'Trails',
-        settings: [
-          { path: 'MAP3D.showCurtains', label: 'Curtains', hint: 'Shade from each trail down to the ground', type: 'toggle' },
-          { path: 'MAP3D.curtainOpacity', label: 'Curtain opacity', type: 'range', min: 0.02, max: 0.5, step: 0.02 },
-        ],
+        title: 'Ground markers',
+        settings: [],
+        perKind: perKind('MAP3D', (p) => [
+          { path: p('dropLine'), label: 'Drop line', hint: 'From the aircraft down to the ground', type: 'toggle' },
+          { path: p('groundDot'), label: 'Ground dot', hint: 'Where the drop line meets the ground', type: 'toggle' },
+        ]),
       },
       {
         title: 'Routes',
-        settings: [
-          { path: 'MAP3D.showRoutes', label: 'Route lines', hint: 'Toward each flight’s origin or destination', type: 'toggle' },
-          { path: 'MAP3D.routeLengthNm', label: 'Length', type: 'range', min: 20, max: 500, step: 10, unit: 'nm' },
-        ],
+        settings: [],
+        // Other traffic has no origin or destination here to point at.
+        perKind: perKind('MAP3D', (p, kind) =>
+          kind === 'other'
+            ? []
+            : [
+                { path: p('route'), label: 'Route line', hint: kind === 'arrival' ? 'Toward its origin' : 'Toward its destination', type: 'toggle' },
+                { path: p('routeLengthNm'), label: 'Length', type: 'range', min: 20, max: 500, step: 10, unit: 'nm' },
+              ],
+        ),
       },
       {
         title: 'Camera',
@@ -192,9 +236,14 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'DIORAMA.minPlaneLengthM', label: 'Smallest aircraft', hint: 'So light aircraft stay visible', type: 'range', min: 0, max: 200, step: 10, unit: 'm' },
           { path: 'DIORAMA.models3d', label: '3D models', hint: 'Off draws flat silhouettes', type: 'toggle' },
           { path: 'DIORAMA.maxHeightFt', label: 'Show airborne below', type: 'range', min: 500, max: 5000, step: 100, unit: 'ft' },
-          { path: 'DIORAMA.parkedOpacity', label: 'Parked opacity', type: 'range', min: 0.1, max: 1, step: 0.05 },
           { path: 'DIORAMA.keepParkedMs', label: 'Keep parked aircraft', hint: 'After their transponder goes quiet', type: 'range', min: 1_800_000, max: 12 * 3_600_000, step: 1_800_000, ...HOURS },
         ],
+        perKind: perKind('DIORAMA', (p) => [
+          ...styleSettings(p),
+          { path: p('parkedOpacity'), label: 'Parked opacity', hint: 'Times the opacity above', type: 'range', min: 0.1, max: 1, step: 0.05 },
+          { path: p('shadow'), label: 'Shadow', hint: 'Under it while airborne', type: 'toggle' },
+          { path: p('dropLine'), label: 'Drop line', hint: 'Down to its shadow', type: 'toggle' },
+        ]),
       },
       {
         title: 'Backdrop',
@@ -262,7 +311,9 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
 ]
 
 /** Every setting in the panel. */
-const ALL_SETTINGS = SETTING_TABS.flatMap((tab) => tab.groups.flatMap((g) => g.settings))
+const ALL_SETTINGS = SETTING_TABS.flatMap((tab) =>
+  tab.groups.flatMap((g) => [...g.settings, ...KINDS.flatMap((kind) => g.perKind?.(kind) ?? [])]),
+)
 
 /** Sent to put the 3D view back in its corner at its starting size and angle. */
 export const RESET_DIORAMA_EVENT = 'airportDiorama:reset'

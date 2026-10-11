@@ -9,6 +9,7 @@ import {
   Fog,
   Line,
   LineBasicMaterial,
+  LineLoop,
   LineDashedMaterial,
   LineSegments,
   Mesh,
@@ -18,21 +19,24 @@ import {
   PlaneGeometry,
   Points,
   PointsMaterial,
+  Raycaster,
   SRGBColorSpace,
   Scene,
+  SphereGeometry,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { modelGeometry } from '../aircraft/aircraftModels'
 import { aircraftSize } from '../aircraft/aircraftShapes'
-import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D } from '../config/config'
+import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, type Map3DTrafficStyle } from '../config/config'
 import { bankOf, pitchOf } from '../diorama/diorama'
-import type { FlightKind } from '../tracking/flights'
 import type { MapLayers } from '../map/mapLayers'
 import { elevationAt, type Terrain } from '../map/terrain'
 import { createProjection, drawTrackLabels, labelFont, renderBackground, type Point } from '../map/renderer'
-import { estimatedPath, predictedPath, type LatLon, type Track } from '../tracking/tracker'
+import { clearAnchor, orbitAnchor, type OrbitAnchor } from './orbitAnchor'
+import { estimatedPath, predictedPath, trailStart, type LatLon, type Track } from '../tracking/tracker'
 
 const FT_PER_NM = 6076.12
 const LON_SCALE = Math.cos((CENTER.lat * Math.PI) / 180)
@@ -48,16 +52,6 @@ function local(p: LatLon) {
 function heightOf(altitudeFt: number | null) {
   if (altitudeFt === null) return 0
   return (Math.max(altitudeFt - AIRPORT_PRESET.elevationFt, 0) / FT_PER_NM) * MAP3D.altitudeScale
-}
-
-function kindColor(kind: FlightKind) {
-  if (kind === 'arrival') return MAP.arrivalColor
-  if (kind === 'departure') return MAP.departureColor
-  return MAP.otherColor
-}
-
-function kindOpacity(kind: FlightKind) {
-  return kind === 'other' ? MAP.otherOpacity : 1
 }
 
 /** One aircraft's scene objects. */
@@ -122,6 +116,19 @@ export class Map3D {
       depthWrite: false,
     }),
   )
+  /** The orbit axis (see orbitAnchor.ts), while placing it: a vertical line fading upward from a ring on the ground. */
+  private readonly axis = new Line(axisGeometry(), new LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }))
+  private readonly axisRing = new LineLoop(ringGeometry(), new LineBasicMaterial({ color: AXIS_COLOR, transparent: true, opacity: 0.8, depthWrite: false }))
+  /** The orbit point itself, while its height is being picked and as it's placed. */
+  private readonly ball = new Mesh(new SphereGeometry(1, 16, 12), new MeshBasicMaterial({ color: AXIS_COLOR, transparent: true, depthWrite: false }))
+  /** The cursor over the map, for the axis preview. */
+  private pointer: { x: number; y: number } | null = null
+  /** The ball's height while picking it, held when the cursor can't place it. */
+  private lastBallZ: number | null = null
+  /** The point the camera last moved to orbit around, so a new one is noticed. */
+  private followed: OrbitAnchor['anchor'] = null
+  /** Moving the camera over to orbit around a newly placed axis. */
+  private glide: { from: Vector3; to: Vector3; start: number } | null = null
   private readonly crafts = new Map<Track, Craft>()
   private readonly labels: CanvasRenderingContext2D
   private width = 1
@@ -155,6 +162,11 @@ export class Map3D {
     this.scene.add(this.dots)
     this.waypoints.frustumCulled = false
     this.scene.add(this.waypoints)
+    for (const o of [this.axis, this.axisRing, this.ball]) {
+      o.frustumCulled = false
+      o.visible = false
+      this.scene.add(o)
+    }
 
     // North-up map with z as height.
     this.camera.up.set(0, 0, 1)
@@ -234,6 +246,10 @@ export class Map3D {
   }
 
   resetCamera() {
+    // The camera leaves the axis, so drop it rather than glide straight back.
+    clearAnchor()
+    this.followed = null
+    this.glide = null
     this.controls.target.set(0, 0, 0)
     this.camera.position.copy(DEFAULT_CAMERA)
     this.controls.update()
@@ -248,8 +264,10 @@ export class Map3D {
     const dt = Math.min((now - this.lastFrame) / 1000, 0.1)
     this.lastFrame = now
     if (this.controls.autoRotate && !MAP3D.orbit) this.saveCamera()
-    this.controls.autoRotate = MAP3D.orbit
+    // Holds still while the orbit point is being placed, so it's easier to aim.
+    this.controls.autoRotate = MAP3D.orbit && !orbitAnchor().picking
     this.controls.autoRotateSpeed = ((MAP3D.orbitDirection === 'counterclockwise' ? -1 : 1) * MAP3D.orbitSpeed) / 6
+    this.followAnchor(now)
     this.controls.update(dt)
     // Fog only the far side of the map, however far out the camera is zoomed;
     // fixed distances would darken the whole map when zoomed out.
@@ -270,25 +288,28 @@ export class Map3D {
     const color = new Color()
 
     for (const t of tracks) {
-      if (t.opacity <= 0) continue
+      const style = MAP3D.traffic[t.info.kind]
+      if (t.opacity <= 0 || !style.show) continue
       seen.add(t)
       const craft = this.crafts.get(t) ?? this.addCraft(t)
       const { x, y } = local(t.pos)
       const z = heightOf(t.altitude)
-      const opacity = t.opacity * kindOpacity(t.info.kind)
-      color.set(kindColor(t.info.kind))
+      const opacity = t.opacity * style.opacity
+      color.set(style.color)
 
       const size = aircraftSize(t.info.aircraftType, t.info.emitterCategory)
       const geometry = modelGeometry(size.kind, size.lengthM, size.spanM, t.info.aircraftType)
       if (craft.mesh.geometry !== geometry) craft.mesh.geometry = geometry
       craft.mesh.position.set(x, y, z)
-      craft.mesh.scale.setScalar(this.modelLength(craft.mesh.position, size.lengthM) / size.lengthM)
+      craft.mesh.scale.setScalar((this.modelLength(craft.mesh.position, size.lengthM) * style.scale) / size.lengthM)
       craft.mesh.rotation.set(rad(pitchOf(t, MAP3D.altitudeScale)), rad(bankOf(t)), -rad(t.heading), 'ZXY')
       craft.material.color.copy(color)
       craft.material.opacity = opacity
 
-      this.updateTrail(craft, t, color, opacity)
-      this.updateRoute(craft, t, x, y, z, color, opacity)
+      this.updateTrail(craft, t, style, color, opacity)
+      craft.trail.visible = style.trail
+      craft.curtain.visible = style.curtain
+      this.updateRoute(craft, t, style, x, y, z, color, opacity)
       this.updatePrediction(craft, t, x, y, z, color, opacity)
       if (MAP.showPredictions && t.info.kind !== 'other') {
         const path = predictedPath(t)
@@ -299,16 +320,20 @@ export class Map3D {
         })
       }
       if (craft.routeEnd && t.info.counterpart) {
-        routeLabels.push({ at: craft.routeEnd, text: t.info.counterpart.city, color: kindColor(t.info.kind), opacity })
+        routeLabels.push({ at: craft.routeEnd, text: t.info.counterpart.city, color: style.color, opacity })
       }
 
       // Drop line from the aircraft to the ground.
       const groundZ = this.groundZ(x, y)
-      drops.push(x, y, z, x, y, groundZ)
-      dropColors.push(color.r, color.g, color.b, 0.35 * opacity, color.r, color.g, color.b, 0)
-      // Lifted a hair so it isn't hidden in the ground.
-      dots.push(x, y, groundZ + 0.05)
-      dotColors.push(color.r, color.g, color.b, 0.8 * opacity)
+      if (style.dropLine) {
+        drops.push(x, y, z, x, y, groundZ)
+        dropColors.push(color.r, color.g, color.b, 0.35 * opacity, color.r, color.g, color.b, 0)
+      }
+      if (style.groundDot) {
+        // Lifted a hair so it isn't hidden in the ground.
+        dots.push(x, y, groundZ + 0.05)
+        dotColors.push(color.r, color.g, color.b, 0.8 * opacity)
+      }
 
       const p = craft.mesh.position.clone().project(this.camera)
       if (p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2) {
@@ -328,8 +353,18 @@ export class Map3D {
 
     const ctx = this.labels
     ctx.clearRect(0, 0, this.width, this.height)
-    if (MAP.showLabels) drawTrackLabels(ctx, shown, screen)
+    if (MAP.showLabels) drawTrackLabels(ctx, shown, MAP3D.traffic, screen)
     this.drawRouteLabels(routeLabels)
+  }
+
+  /**
+   * The ground point under a screen position (client pixels), for placing the
+   * orbit axis; null if it's off the ground.
+   */
+  pickGround(clientX: number, clientY: number): Vector3 | null {
+    const raycaster = new Raycaster()
+    raycaster.ray.copy(this.rayAt(clientX, clientY))
+    return raycaster.intersectObject(this.ground)[0]?.point ?? null
   }
 
   dispose() {
@@ -386,28 +421,27 @@ export class Map3D {
    * Rebuilds the trail line and curtain when a new trail point arrives (twice a
    * second), and otherwise just moves their head to the aircraft each frame.
    */
-  private updateTrail(craft: Craft, t: Track, color: Color, opacity: number) {
-    const n = t.trail.length + 1
+  private updateTrail(craft: Craft, t: Track, style: Map3DTrafficStyle, color: Color, opacity: number) {
+    const start = trailStart(t, style.trailSeconds)
+    const n = t.trail.length - start + 1
     if (t.lastTrailAt !== craft.builtAt || n !== craft.count) {
       craft.builtAt = t.lastTrailAt
       if (n > craft.capacity) this.allocateTrail(craft, n + 64)
       craft.count = n
-      const points = smooth(
-        [...t.trail.map((p, i) => ({ ...local(p), z: heightOf(t.trailAlt[i] ?? null) })), { ...local(t.pos), z: heightOf(t.altitude) }],
-        MAP.trailSmoothing,
-      )
+      const trail = t.trail.slice(start).map((p, i) => ({ ...local(p), z: heightOf(t.trailAlt[start + i] ?? null) }))
+      const points = smooth([...trail, { ...local(t.pos), z: heightOf(t.altitude) }], style.trailSmoothing)
       const line = craft.trail.geometry
       const wall = craft.curtain.geometry
       const linePos = line.getAttribute('position') as BufferAttribute
       const lineCol = line.getAttribute('color') as BufferAttribute
       const wallPos = wall.getAttribute('position') as BufferAttribute
       const wallCol = wall.getAttribute('color') as BufferAttribute
-      const curtain = MAP3D.showCurtains ? MAP3D.curtainOpacity : 0
+      const curtain = style.curtainOpacity
       points.forEach((p, i) => {
         // Fades in from the tail to the aircraft.
         const fade = n > 1 ? i / (n - 1) : 1
         linePos.setXYZ(i, p.x, p.y, p.z)
-        lineCol.setXYZW(i, color.r, color.g, color.b, fade * MAP.trailOpacity * opacity)
+        lineCol.setXYZW(i, color.r, color.g, color.b, fade * style.trailOpacity * opacity)
         wallPos.setXYZ(2 * i, p.x, p.y, p.z)
         wallPos.setXYZ(2 * i + 1, p.x, p.y, this.groundZ(p.x, p.y))
         wallCol.setXYZW(2 * i, color.r, color.g, color.b, fade * curtain * opacity)
@@ -464,9 +498,9 @@ export class Map3D {
    * (arrivals) or destination (departures), rising toward cruise height as it
    * goes. Rebuilt with the trail; hidden when off or the airport isn't known.
    */
-  private updateRoute(craft: Craft, t: Track, x: number, y: number, z: number, color: Color, opacity: number) {
+  private updateRoute(craft: Craft, t: Track, style: Map3DTrafficStyle, x: number, y: number, z: number, color: Color, opacity: number) {
     const target = t.info.counterpart
-    const on = MAP3D.showRoutes && t.info.kind !== 'other' && target?.lat != null && target.lon != null
+    const on = style.route && t.info.kind !== 'other' && target?.lat != null && target.lon != null
     craft.route.visible = on
     if (!on) {
       craft.routeEnd = null
@@ -480,7 +514,7 @@ export class Map3D {
       return
     }
     craft.route.userData.builtAt = craft.builtAt
-    const points = greatCircle(t.pos, { lat: target!.lat!, lon: target!.lon! }, MAP3D.routeLengthNm, ROUTE_SEGMENTS)
+    const points = greatCircle(t.pos, { lat: target!.lat!, lon: target!.lon! }, style.routeLengthNm, ROUTE_SEGMENTS)
     const cruise = heightOf(AIRPORT_PRESET.elevationFt + CRUISE_FT)
     const positions = new Float32Array(points.length * 3)
     const colors = new Float32Array(points.length * 4)
@@ -531,6 +565,104 @@ export class Map3D {
 
   // ---- Camera -----------------------------------------------------------------------
 
+  /**
+   * While orbiting around a point: glides the camera over when a new one is
+   * placed (keeping its angle and distance) and keeps panning off so it stays
+   * in the middle. Draws the axis while one is being placed, and flashes it
+   * once placed before fading it out.
+   */
+  private followAnchor(now: number) {
+    const { anchor, picking, foot } = orbitAnchor()
+    const target = MAP3D.orbit ? anchor : null
+    if (target !== this.followed) {
+      this.followed = target
+      this.glide = target
+        ? { from: this.controls.target.clone(), to: new Vector3(target.x, target.y, target.z), start: now }
+        : null
+    }
+    this.controls.enablePan = target === null
+    if (this.glide) {
+      const t = Math.min((now - this.glide.start) / AXIS_GLIDE_MS, 1)
+      const eased = 1 - (1 - t) ** 3
+      const delta = this.glide.from.clone().lerp(this.glide.to, eased).sub(this.controls.target)
+      this.controls.target.add(delta)
+      this.camera.position.add(delta)
+      if (t === 1) {
+        this.glide = null
+        this.saveCamera()
+      }
+    }
+
+    // What to draw: the axis under the cursor, the planted one with the ball at
+    // the cursor's height, or the chosen point flashing then fading away.
+    let shown: { x: number; y: number; groundZ: number; ballZ: number | null; opacity: number; pulse: number } | null = null
+    if (picking === 'axis' && this.pointer) {
+      const p = this.pickGround(this.pointer.x, this.pointer.y)
+      if (p) shown = { x: p.x, y: p.y, groundZ: p.z, ballZ: null, opacity: 0.55, pulse: 0 }
+    } else if (picking === 'height' && foot) {
+      const z = this.pointer ? this.pickHeight(this.pointer.x, this.pointer.y, foot) : null
+      shown = { x: foot.x, y: foot.y, groundZ: foot.z, ballZ: z ?? this.lastBallZ ?? foot.z, opacity: 0.9, pulse: 0 }
+      this.lastBallZ = shown.ballZ
+    } else if (target && this.glide) {
+      // Placed: a quick pulse to show the choice, then it fades out as the camera arrives.
+      const t = (now - this.glide.start) / AXIS_GLIDE_MS
+      const pulse = Math.sin(Math.min(t / 0.35, 1) * Math.PI)
+      const opacity = t < 0.35 ? 1 : Math.max(0, 1 - (t - 0.35) / 0.65)
+      shown = { x: target.x, y: target.y, groundZ: target.groundZ, ballZ: target.z, opacity, pulse }
+    }
+    if (picking !== 'height') this.lastBallZ = null
+
+    this.axis.visible = this.axisRing.visible = shown !== null
+    this.ball.visible = shown?.ballZ != null
+    if (!shown) return
+    // Sized by the camera's distance, so it looks the same however far out it's zoomed.
+    const distance = this.camera.position.distanceTo(this.controls.target)
+    const above = (shown.ballZ ?? shown.groundZ) - shown.groundZ
+    this.axis.position.set(shown.x, shown.y, shown.groundZ)
+    this.axis.scale.set(1, 1, Math.max(distance * 0.45, above + distance * 0.15))
+    this.axisRing.position.set(shown.x, shown.y, shown.groundZ + 0.02)
+    this.axisRing.scale.setScalar(distance * 0.025 * (1 + shown.pulse * 0.8))
+    ;(this.axis.material as LineBasicMaterial).opacity = shown.opacity
+    this.axisRing.material.opacity = 0.8 * shown.opacity
+    if (shown.ballZ != null) {
+      this.ball.position.set(shown.x, shown.y, shown.ballZ)
+      this.ball.scale.setScalar(distance * 0.004 * (1 + shown.pulse))
+      this.ball.material.opacity = shown.opacity
+    }
+  }
+
+  /**
+   * Where the cursor is (client pixels), so the axis preview can follow it;
+   * null when it leaves the map.
+   */
+  setPointer(pointer: { x: number; y: number } | null) {
+    this.pointer = pointer
+  }
+
+  /**
+   * How high up the vertical axis standing at `foot` the cursor points: the
+   * point on the axis nearest the ray under it, kept between the ground and a
+   * little above the camera's distance. Null when looking straight down it.
+   */
+  pickHeight(clientX: number, clientY: number, foot: { x: number; y: number; z: number }): number | null {
+    const { origin, direction: d } = this.rayAt(clientX, clientY)
+    const denom = 1 - d.z * d.z
+    if (denom < 1e-4) return null
+    // Closest points between the ray and the line (foot.x, foot.y, t).
+    const w = origin.clone().sub(new Vector3(foot.x, foot.y, 0))
+    const z = (w.z - d.z * d.dot(w)) / denom
+    const top = foot.z + this.camera.position.distanceTo(this.controls.target)
+    return Math.min(Math.max(z, foot.z), top)
+  }
+
+  private rayAt(clientX: number, clientY: number) {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, 1 - ((clientY - rect.top) / rect.height) * 2)
+    const raycaster = new Raycaster()
+    raycaster.setFromCamera(ndc, this.camera)
+    return raycaster.ray
+  }
+
   /** World units per screen pixel at `distance` from the camera, for sizing things in pixels. */
   private worldPerPixel(distance: number) {
     return (2 * distance * Math.tan(rad(this.camera.fov) / 2)) / this.height
@@ -550,6 +682,7 @@ export class Map3D {
     return Math.max(px * this.worldPerPixel(DEFAULT_DISTANCE), MIN_MODEL_PX * here)
   }
 
+
   private updateProjection() {
     this.camera.updateProjectionMatrix()
     // Shear the projection so its center sits in the uncovered area (see resize).
@@ -558,7 +691,8 @@ export class Map3D {
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert()
   }
 
-  private saveCamera() {
+  /** Remembers the camera in this browser (also before a setup is saved). */
+  saveCamera() {
     try {
       const { position: p } = this.camera
       const { target: t } = this.controls
@@ -663,6 +797,31 @@ function setPathLine(
   const material = line.material as LineDashedMaterial
   material.color.copy(color)
   material.opacity = opacity
+}
+
+const AXIS_COLOR = 0xe8eef8
+const AXIS_GLIDE_MS = 1200
+
+/** A unit-tall vertical line, solid at the ground and fading out at the top. */
+function axisGeometry() {
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0, 0, 1]), 3))
+  const c = new Color(AXIS_COLOR)
+  geometry.setAttribute('color', new BufferAttribute(new Float32Array([c.r, c.g, c.b, 0.9, c.r, c.g, c.b, 0]), 4))
+  return geometry
+}
+
+/** A flat unit circle, for the ring around the axis's foot. */
+function ringGeometry() {
+  const segments = 48
+  const positions = new Float32Array(segments * 3)
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2
+    positions.set([Math.cos(a), Math.sin(a), 0], i * 3)
+  }
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(positions, 3))
+  return geometry
 }
 
 function rad(deg: number) {

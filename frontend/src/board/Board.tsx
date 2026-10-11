@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type Ref } from 'react'
-import { AIRPORT, AIRPORT_PRESET, BOARD, MAP, MOTION } from '../config/config'
+import { AIRPORT, AIRPORT_PRESET, BOARD, MAP, MAP3D, MOTION } from '../config/config'
 import { FlapText } from './FlapText'
 import type { BoardEvent, BoardRow, BoardState } from './flightBoard'
 import { AtisStrip } from '../weather/AtisStrip'
@@ -160,9 +160,11 @@ function useUntilExpired(event: BoardEvent | null) {
  * .board-inner, where --cell (the tile width) is defined.
  */
 function boardStyle() {
+  // The board matches whichever map is showing.
+  const { traffic } = MAP.view === '3d' ? MAP3D : MAP
   return {
-    '--arrival': MAP.arrivalColor,
-    '--departure': MAP.departureColor,
+    '--arrival': traffic.arrival.color,
+    '--departure': traffic.departure.color,
     '--columns': columns()
       .map((n) => `calc(${n} * var(--cell))`)
       .join(' '),

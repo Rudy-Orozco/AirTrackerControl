@@ -11,3 +11,9 @@
 .radar.map3d-labels {
   pointer-events: none;
 }
+
+/* Waiting for a click to place the orbit axis. */
+.radar.map3d.is-picking,
+.radar.map3d.is-picking:active {
+  cursor: crosshair;
+}

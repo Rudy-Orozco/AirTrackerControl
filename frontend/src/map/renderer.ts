@@ -1,10 +1,10 @@
 import type { Basemap, Line } from './basemap'
-import { MAP } from '../config/config'
+import { MAP, type MapTrafficStyle, type TrafficStyle } from '../config/config'
 import type { FlightKind } from '../tracking/flights'
 import type { Radar } from './radar'
 import type { Terrain } from './terrain'
 import { leaderLine, newLabelState, updateLabels, type LabelItem, type LabelState } from './labels'
-import { estimatedPath, predictedPath, type LatLon, type Track } from '../tracking/tracker'
+import { estimatedPath, predictedPath, trailStart, type LatLon, type Track } from '../tracking/tracker'
 
 export interface Point {
   x: number
@@ -206,20 +206,21 @@ export function drawTracks(ctx: CanvasRenderingContext2D, tracks: Iterable<Track
 
   // Draw background traffic first so arrivals and departures sit on top.
   const visible = [...tracks]
-    .filter((t) => t.opacity > 0)
+    .filter((t) => t.opacity > 0 && MAP.traffic[t.info.kind].show)
     .sort((a, b) => DRAW_ORDER[a.info.kind] - DRAW_ORDER[b.info.kind])
   const positions = visible.map((t) => project(t.pos))
 
   visible.forEach((t, i) => {
-    const { color, opacity } = kindStyle(t.info.kind)
-    drawTrail(ctx, t, positions[i], project, color, t.opacity * opacity)
+    const style = MAP.traffic[t.info.kind]
+    const { color, opacity, scale } = style
+    if (style.trail) drawTrail(ctx, t, positions[i], project, style, t.opacity * opacity)
     ctx.globalAlpha = t.opacity * opacity
     ctx.fillStyle = color
-    drawPlane(ctx, positions[i], t.heading, MAP.planeSize)
+    drawPlane(ctx, positions[i], t.heading, MAP.planeSize * scale)
     if (MAP.showPredictions && t.info.kind !== 'other') drawPrediction(ctx, t, positions[i], project, color)
   })
 
-  if (MAP.showLabels) drawLabels(ctx, visible, positions)
+  if (MAP.showLabels) drawLabels(ctx, visible, MAP.traffic, positions)
   ctx.globalAlpha = 1
 }
 
@@ -298,16 +299,24 @@ document.fonts.addEventListener('loadingdone', () => textWidths.clear())
  * Labels go on top of every aircraft, each in a free spot around its aircraft,
  * with a leader line when it had to sit farther out.
  */
-/** Labels for aircraft already placed on screen by another view (the 3D map). */
-export function drawTrackLabels(ctx: CanvasRenderingContext2D, tracks: Track[], positions: Point[]) {
+/** Labels for aircraft already placed on screen by another view (the 3D map), in its styles. */
+export function drawTrackLabels(ctx: CanvasRenderingContext2D, tracks: Track[], styles: TrafficStyles, positions: Point[]) {
   ctx.font = labelFont()
   ctx.textAlign = 'left'
   ctx.lineCap = 'round'
-  drawLabels(ctx, tracks, positions)
+  drawLabels(ctx, tracks, styles, positions)
   ctx.globalAlpha = 1
 }
 
-function drawLabels(ctx: CanvasRenderingContext2D, tracks: Track[], positions: Point[]) {
+/** Labels the aircraft whose kind has labels on; the others still keep labels off their icons. */
+function drawLabels(ctx: CanvasRenderingContext2D, all: Track[], styles: TrafficStyles, allPositions: Point[]) {
+  const tracks: Track[] = []
+  const positions: Point[] = []
+  all.forEach((t, i) => {
+    if (!styles[t.info.kind].labels) return
+    tracks.push(t)
+    positions.push(allPositions[i])
+  })
   const texts = tracks.map(label)
   const items: LabelItem[] = tracks.map((t, i) => {
     const width = measure(ctx, texts[i])
@@ -326,12 +335,12 @@ function drawLabels(ctx: CanvasRenderingContext2D, tracks: Track[], positions: P
       state,
     }
   })
-  updateLabels(items, positions, { width: ctx.canvas.clientWidth, height: ctx.canvas.clientHeight }, performance.now())
+  updateLabels(items, allPositions, { width: ctx.canvas.clientWidth, height: ctx.canvas.clientHeight }, performance.now())
 
   ctx.textBaseline = 'middle'
   ctx.lineWidth = 1
   items.forEach((item, i) => {
-    const { color, opacity } = kindStyle(tracks[i].info.kind)
+    const { color, opacity } = styles[tracks[i].info.kind]
     ctx.globalAlpha = tracks[i].opacity * opacity * LABEL_OPACITY * item.state.alpha
     if (ctx.globalAlpha < 0.01) return
     const line = leaderLine(item)
@@ -364,25 +373,23 @@ function measure(ctx: CanvasRenderingContext2D, text: string) {
   return width
 }
 
-function kindStyle(kind: FlightKind): { color: string; opacity: number } {
-  if (kind === 'departure') return { color: MAP.departureColor, opacity: 1 }
-  if (kind === 'arrival') return { color: MAP.arrivalColor, opacity: 1 }
-  return { color: MAP.otherColor, opacity: MAP.otherOpacity }
-}
+type TrafficStyles = Record<FlightKind, TrafficStyle & { labels: boolean }>
 
 const DRAW_ORDER: Record<FlightKind, number> = { other: 0, departure: 1, arrival: 1 }
 
-function drawTrail(ctx: CanvasRenderingContext2D, t: Track, pos: Point, project: Projection, color: string, opacity: number) {
-  if (t.trail.length < 2) return
-  const start = project(t.trail[0])
+function drawTrail(ctx: CanvasRenderingContext2D, t: Track, pos: Point, project: Projection, style: MapTrafficStyle, opacity: number) {
+  const trail = t.trail.slice(trailStart(t, style.trailSeconds))
+  if (trail.length < 2) return
+  const { color } = style
+  const start = project(trail[0])
 
   // One path per plane with a tail-to-head gradient: looks like a fading trail
   // at a fraction of the cost of stroking every segment separately.
   const gradient = ctx.createLinearGradient(start.x, start.y, pos.x, pos.y)
   gradient.addColorStop(0, withAlpha(color, 0))
-  gradient.addColorStop(1, withAlpha(color, MAP.trailOpacity * opacity))
+  gradient.addColorStop(1, withAlpha(color, style.trailOpacity * opacity))
 
-  const points = smoothPath([...t.trail.map(project), pos], MAP.trailSmoothing)
+  const points = smoothPath([...trail.map(project), pos], style.trailSmoothing)
   // Curve through the midpoints between samples, using each sample as the control point.
   ctx.beginPath()
   ctx.moveTo(points[0].x, points[0].y)
@@ -393,7 +400,7 @@ function drawTrail(ctx: CanvasRenderingContext2D, t: Track, pos: Point, project:
   }
   ctx.lineTo(pos.x, pos.y)
   ctx.strokeStyle = gradient
-  ctx.lineWidth = MAP.trailWidth
+  ctx.lineWidth = style.trailWidth
   ctx.stroke()
 }
 

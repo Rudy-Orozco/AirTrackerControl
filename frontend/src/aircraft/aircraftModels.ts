@@ -18,8 +18,7 @@ import {
 } from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { aircraftSize, type ShapeKind } from './aircraftShapes'
-import { DIORAMA } from '../config/config'
-import type { AircraftPose, DioramaView } from '../diorama/diorama'
+import { dioramaPlaneScale, type AircraftPose, type DioramaView } from '../diorama/diorama'
 
 /**
  * Low-poly 3D aircraft for the airport view, drawn with WebGL on a canvas
@@ -86,8 +85,7 @@ export class AircraftModels {
       material.opacity = pose.opacity
       material.depthWrite = pose.opacity > 0.9
 
-      const scale = Math.max(DIORAMA.planeScale, DIORAMA.minPlaneLengthM / size.lengthM)
-      mesh.scale.setScalar(scale)
+      mesh.scale.setScalar(dioramaPlaneScale(size.lengthM, pose.scale))
       mesh.position.set(pose.at.x, pose.at.y, pose.at.z)
       // Heading turns clockwise from north (+y); pitch raises the nose; bank lowers the right wing.
       mesh.rotation.set(rad(pose.pitch), rad(pose.bank), -rad(pose.heading), 'ZXY')

@@ -1,7 +1,7 @@
 import { aircraftSize, SHAPES } from '../aircraft/aircraftShapes'
 import type { Line } from '../map/basemap'
 import { AIRPORT_PRESET, DIORAMA, MAP } from '../config/config'
-import type { Flight, FlightKind } from '../tracking/flights'
+import type { Flight } from '../tracking/flights'
 import type { GroundTrack } from '../tracking/groundTracker'
 import type { Point } from '../map/renderer'
 import type { LatLon, Track } from '../tracking/tracker'
@@ -388,12 +388,6 @@ function drawBuilding(ctx: CanvasRenderingContext2D, view: DioramaView, base: Ve
 
 // ---- Aircraft -------------------------------------------------------------------
 
-function kindColor(kind: FlightKind) {
-  if (kind === 'arrival') return MAP.arrivalColor
-  if (kind === 'departure') return MAP.departureColor
-  return MAP.otherColor
-}
-
 interface Drawable {
   depth: number
   draw: () => void
@@ -419,40 +413,42 @@ export function drawDioramaAircraft(
   for (const t of ground) {
     onGround.add(t.info.hex)
     const local = view.toLocal(t.pos)
-    if (t.opacity <= 0 || !inside(local)) continue
+    const { show, color, opacity: kindOpacity, scale, parkedOpacity } = DIORAMA.traffic[t.info.kind]
+    if (t.opacity <= 0 || !show || !inside(local)) continue
     // Above zero only while settling onto the runway just after touchdown.
     const at = { ...local, z: t.heightFt * M_PER_FT * view.altitudeScale }
-    const opacity = t.opacity * (t.parked ? DIORAMA.parkedOpacity : 1) * (t.info.kind === 'other' ? MAP.otherOpacity : 1)
-    const color = kindColor(t.info.kind)
-    poses.push({ id: `g${t.info.hex}`, info: t.info, at, heading: t.heading, pitch: 0, bank: 0, color, opacity })
-    if (drawPlanes) items.push({ depth: view.depth(at), draw: () => drawPlane(ctx, view, at, t.heading, t.info, color, opacity) })
+    const opacity = t.opacity * (t.parked ? parkedOpacity : 1) * kindOpacity
+    poses.push({ id: `g${t.info.hex}`, info: t.info, at, heading: t.heading, pitch: 0, bank: 0, color, opacity, scale })
+    if (drawPlanes) items.push({ depth: view.depth(at), draw: () => drawPlane(ctx, view, at, t.heading, t.info, color, opacity, scale) })
   }
 
   for (const t of airborne) {
     // Once on the ground, the ground tracker draws it (it carries on from here).
-    if (t.opacity <= 0 || t.altitude === null || onGround.has(t.info.hex)) continue
+    const { show, color, opacity: kindOpacity, scale, shadow, dropLine } = DIORAMA.traffic[t.info.kind]
+    if (t.opacity <= 0 || !show || t.altitude === null || onGround.has(t.info.hex)) continue
     const heightFt = t.altitude - AIRPORT_PRESET.elevationFt
     if (heightFt > DIORAMA.maxHeightFt) continue
     const local = view.toLocal(t.pos)
     if (!inside(local)) continue
     const at = { ...local, z: Math.max(heightFt, 0) * M_PER_FT * view.altitudeScale }
-    const color = kindColor(t.info.kind)
-    const opacity = t.opacity * (t.info.kind === 'other' ? MAP.otherOpacity : 1)
-    poses.push({ id: `a${t.info.hex}`, info: t.info, at, heading: t.heading, pitch: pitchOf(t, view.altitudeScale), bank: bankOf(t), color, opacity })
+    const opacity = t.opacity * kindOpacity
+    poses.push({ id: `a${t.info.hex}`, info: t.info, at, heading: t.heading, pitch: pitchOf(t, view.altitudeScale), bank: bankOf(t), color, opacity, scale })
     items.push({
       depth: view.depth(at),
       draw: () => {
-        drawPlane(ctx, view, { ...at, z: 0 }, t.heading, t.info, '#000000', 0.35 * t.opacity)
-        const a = view.toScreen({ ...at, z: 0 })
-        const b = view.toScreen(at)
-        ctx.globalAlpha = 0.3 * t.opacity
-        ctx.strokeStyle = color
-        ctx.lineWidth = 0.75
-        ctx.beginPath()
-        ctx.moveTo(a.x, a.y)
-        ctx.lineTo(b.x, b.y)
-        ctx.stroke()
-        if (drawPlanes) drawPlane(ctx, view, at, t.heading, t.info, color, opacity)
+        if (shadow) drawPlane(ctx, view, { ...at, z: 0 }, t.heading, t.info, '#000000', 0.35 * t.opacity, scale)
+        if (dropLine) {
+          const a = view.toScreen({ ...at, z: 0 })
+          const b = view.toScreen(at)
+          ctx.globalAlpha = 0.3 * t.opacity
+          ctx.strokeStyle = color
+          ctx.lineWidth = 0.75
+          ctx.beginPath()
+          ctx.moveTo(a.x, a.y)
+          ctx.lineTo(b.x, b.y)
+          ctx.stroke()
+        }
+        if (drawPlanes) drawPlane(ctx, view, at, t.heading, t.info, color, opacity, scale)
       },
     })
   }
@@ -476,6 +472,8 @@ export interface AircraftPose {
   bank: number
   color: string
   opacity: number
+  /** Times the usual size (DIORAMA.traffic). */
+  scale: number
 }
 
 const G = 9.81
@@ -507,14 +505,19 @@ function clampDeg(v: number, limit: number) {
   return Math.min(Math.max(v, -limit), limit)
 }
 
+/** How many times real size to draw an aircraft `lengthM` long, times its kind's `kindScale`. */
+export function dioramaPlaneScale(lengthM: number, kindScale: number) {
+  return Math.max(DIORAMA.planeScale, DIORAMA.minPlaneLengthM / lengthM) * kindScale
+}
+
 /**
  * An aircraft lying flat at `at` (so it foreshortens with the floor), in the
  * silhouette and proportions of its type, scaled up per DIORAMA.planeScale.
  */
-function drawPlane(ctx: CanvasRenderingContext2D, view: DioramaView, at: Vec3, heading: number, info: Flight, color: string, opacity: number) {
+function drawPlane(ctx: CanvasRenderingContext2D, view: DioramaView, at: Vec3, heading: number, info: Flight, color: string, opacity: number, kindScale: number) {
   const size = aircraftSize(info.aircraftType, info.emitterCategory)
   const shape = SHAPES[size.kind]
-  const scale = Math.max(DIORAMA.planeScale, DIORAMA.minPlaneLengthM / size.lengthM)
+  const scale = dioramaPlaneScale(size.lengthM, kindScale)
   const [length, span] = [size.lengthM * scale, size.spanM * scale]
   const rad = (heading * Math.PI) / 180
   const [sin, cos] = [Math.sin(rad), Math.cos(rad)]

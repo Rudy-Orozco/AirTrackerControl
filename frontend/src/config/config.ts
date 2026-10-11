@@ -17,10 +17,44 @@ export const SETTINGS_KEY = 'settings'
 export function loadSavedSettings(): Record<string, unknown> {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
-    return saved && typeof saved === 'object' ? saved : {}
+    return saved && typeof saved === 'object' ? migrate(saved) : {}
   } catch {
     return {}
   }
+}
+
+/**
+ * Settings that were once shared by every kind of traffic (and some by every
+ * view), and the per-kind settings ("*" for each kind) they carry over to.
+ */
+const LEGACY_SETTINGS: Record<string, string[]> = {
+  'MAP.arrivalColor': ['MAP.traffic.arrival.color', 'MAP3D.traffic.arrival.color', 'DIORAMA.traffic.arrival.color'],
+  'MAP.departureColor': ['MAP.traffic.departure.color', 'MAP3D.traffic.departure.color', 'DIORAMA.traffic.departure.color'],
+  'MAP.otherColor': ['MAP.traffic.other.color', 'MAP3D.traffic.other.color', 'DIORAMA.traffic.other.color'],
+  'MAP.otherOpacity': ['MAP.traffic.other.opacity', 'MAP3D.traffic.other.opacity', 'DIORAMA.traffic.other.opacity'],
+  'MAP.trailSeconds': ['MAP.traffic.*.trailSeconds', 'MAP3D.traffic.*.trailSeconds'],
+  'MAP.trailOpacity': ['MAP.traffic.*.trailOpacity', 'MAP3D.traffic.*.trailOpacity'],
+  'MAP.trailSmoothing': ['MAP.traffic.*.trailSmoothing', 'MAP3D.traffic.*.trailSmoothing'],
+  'MAP.trailWidth': ['MAP.traffic.*.trailWidth'],
+  'MAP3D.showCurtains': ['MAP3D.traffic.*.curtain'],
+  'MAP3D.curtainOpacity': ['MAP3D.traffic.*.curtainOpacity'],
+  'MAP3D.showRoutes': ['MAP3D.traffic.*.route'],
+  'MAP3D.routeLengthNm': ['MAP3D.traffic.*.routeLengthNm'],
+  'DIORAMA.parkedOpacity': ['DIORAMA.traffic.*.parkedOpacity'],
+}
+
+function migrate(saved: Record<string, unknown>): Record<string, unknown> {
+  for (const [old, targets] of Object.entries(LEGACY_SETTINGS)) {
+    if (!(old in saved)) continue
+    for (const target of targets) {
+      for (const kind of ['arrival', 'departure', 'other']) {
+        const key = target.replace('*', kind)
+        if (!(key in saved)) saved[key] = saved[old]
+      }
+    }
+    delete saved[old]
+  }
+  return saved
 }
 
 // ---- Airport -------------------------------------------------------------------
@@ -81,6 +115,83 @@ export const FEED = {
 
 // ---- Aircraft on the map ----------------------------------------------------
 
+type Kinds<T> = Record<'arrival' | 'departure' | 'other', T>
+
+/** How one kind of traffic (arrivals, departures or everything else) is drawn, in every view. */
+export interface TrafficStyle {
+  show: boolean
+  color: string
+  opacity: number
+  /** Times the view's aircraft size. */
+  scale: number
+}
+
+/** The kind's colors in every view, from the 2D map's original defaults. */
+function baseStyles(): Kinds<TrafficStyle> {
+  return {
+    arrival: { show: true, color: '#4ea2ff', opacity: 1, scale: 1 },
+    departure: { show: true, color: '#ff8a33', opacity: 1, scale: 1 },
+    other: { show: true, color: '#ffffff', opacity: 0.3, scale: 1 },
+  }
+}
+
+/** The same extras for every kind, on top of its base style. */
+function withExtras<T extends object>(extras: T): Kinds<TrafficStyle & T> {
+  const base = baseStyles()
+  return {
+    arrival: { ...base.arrival, ...extras },
+    departure: { ...base.departure, ...extras },
+    other: { ...base.other, ...extras },
+  }
+}
+
+/** Trails on the maps. */
+interface TrailStyle {
+  /** Callsign and altitude label next to it. */
+  labels: boolean
+  /** The path behind it. */
+  trail: boolean
+  /** How many seconds of path it leaves behind. */
+  trailSeconds: number
+  /** Opacity of the trail at the aircraft end; it fades to nothing at the tail. */
+  trailOpacity: number
+  /** Trail points are averaged with this many neighbours on each side (2 per second) to iron out kinks. 0 turns it off. */
+  trailSmoothing: number
+}
+
+const TRAIL_DEFAULTS: TrailStyle = { labels: true, trail: true, trailSeconds: 180, trailOpacity: 0.55, trailSmoothing: 4 }
+
+export type MapTrafficStyle = TrafficStyle & TrailStyle & { trailWidth: number }
+
+export type Map3DTrafficStyle = TrafficStyle &
+  TrailStyle & {
+    /** A faint curtain from the trail down to the ground, showing its altitude profile. */
+    curtain: boolean
+    curtainOpacity: number
+    /** A line from the aircraft straight down to the ground... */
+    dropLine: boolean
+    /** ...and a dot where it meets it. */
+    groundDot: boolean
+    /** A line toward its origin (arrivals) or destination (departures). */
+    route: boolean
+    /** How far it reaches, in nautical miles (origins can be across the world). */
+    routeLengthNm: number
+  }
+
+export type DioramaTrafficStyle = TrafficStyle & {
+  /** A shadow on the ground under airborne aircraft... */
+  shadow: boolean
+  /** ...and a line down to it. */
+  dropLine: boolean
+  /** Opacity once parked, times its opacity, so taxiing aircraft stand out. */
+  parkedOpacity: number
+}
+
+/** A newly seen aircraft's trail keeps the longer of the maps' trail lengths for its kind. */
+export function trailSecondsFor(kind: keyof Kinds<unknown>) {
+  return Math.max(MAP.traffic[kind].trailSeconds, MAP3D.traffic[kind].trailSeconds)
+}
+
 export const MOTION = {
   /**
    * Off: aircraft are predicted ahead to where they should be when the next fetch lands.
@@ -114,11 +225,8 @@ export const MOTION = {
 export const MAP = {
   /** Flat map ('2d') or a tilted 3D map with aircraft at altitude ('3d'); the 2D/3D button switches. */
   view: '2d' as '2d' | '3d',
-  departureColor: '#ff8a33',
-  arrivalColor: '#4ea2ff',
-  /** Aircraft that are neither arriving at nor departing from AIRPORT. */
-  otherColor: '#ffffff',
-  otherOpacity: 0.3,
+  /** Arrivals at, departures from, and other traffic around AIRPORT, each styled separately. */
+  traffic: withExtras<Omit<MapTrafficStyle, keyof TrafficStyle>>({ ...TRAIL_DEFAULTS, trailWidth: 1.5 }),
 
   /** Size of the aircraft arrows, in pixels. */
   planeSize: 9,
@@ -137,13 +245,6 @@ export const MAP = {
   /** Font for map labels; JetBrains Mono is bundled with the app (the board uses it too). */
   fontFamily: '"JetBrains Mono Variable", ui-monospace, monospace',
 
-  /** How many seconds of path each aircraft leaves behind. */
-  trailSeconds: 180,
-  trailWidth: 1.5,
-  /** Trail points are averaged with this many neighbours on each side (2 per second) to iron out kinks. 0 turns it off. */
-  trailSmoothing: 4,
-  /** Opacity of the trail at the aircraft end; it fades to nothing at the tail. */
-  trailOpacity: 0.55,
 
   /** Show the lie of the land: hill shading on the 2D map, real relief on the 3D map. */
   terrain: false,
@@ -173,15 +274,18 @@ export const MAP = {
 export const MAP3D = {
   /** Aircraft size in pixels from the starting camera distance (separate from the 2D map's MAP.planeSize). */
   planeSize: 9,
+  /** Arrivals, departures and other traffic, styled separately from the 2D map. */
+  traffic: withExtras<Omit<Map3DTrafficStyle, keyof TrafficStyle>>({
+    ...TRAIL_DEFAULTS,
+    curtain: true,
+    curtainOpacity: 0.12,
+    dropLine: true,
+    groundDot: true,
+    route: false,
+    routeLengthNm: 120,
+  }),
   /** Heights are drawn this many times taller than real, so climbs and descents read at this scale. */
   altitudeScale: 4,
-  /** Hang a faint curtain from each trail down to the ground, showing its altitude profile. */
-  showCurtains: true,
-  curtainOpacity: 0.12,
-  /** Draw a line from each arrival toward its origin (and each departure toward its destination). */
-  showRoutes: false,
-  /** How far route lines reach, in nautical miles (origins can be across the world). */
-  routeLengthNm: 120,
   /** Keep aircraft the same size on screen at any zoom, instead of a fixed size in the world that grows as you zoom in. */
   fixedScreenSize: false,
   /** Slowly circle the camera around the point it looks at, keeping its tilt and distance (the orbit button). */
@@ -220,6 +324,8 @@ export const DIORAMA = {
   boxHeight: 0.18,
   /** Buildings are drawn this many times taller than real so they stand out at this scale. */
   buildingHeightScale: 4,
+  /** Arrivals, departures and other traffic, styled separately from the maps. */
+  traffic: withExtras<Omit<DioramaTrafficStyle, keyof TrafficStyle>>({ shadow: true, dropLine: true, parkedOpacity: 0.45 }),
   /** Draw aircraft as shaded 3D models (WebGL); off draws flat silhouettes. */
   models3d: true,
   /**
@@ -237,8 +343,6 @@ export const DIORAMA = {
   keepParkedMs: 3 * 3_600_000,
   /** Taxiing aircraft that vanish from the feed fade out after this long. */
   staleMs: 30_000,
-  /** Opacity of parked aircraft, so taxiing ones stand out. */
-  parkedOpacity: 0.45,
 }
 
 // ---- Weather (METAR) --------------------------------------------------------------

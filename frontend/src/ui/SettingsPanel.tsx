@@ -1,8 +1,13 @@
 import { useEffect, useId, useState } from 'react'
 import { DIORAMA, MAP, MAP3D } from '../config/config'
 import { desktop } from '../lib/desktop'
+import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
+import { clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
+import type { FlightKind } from '../tracking/flights'
 import {
   getSetting,
+  KIND_LABELS,
+  KINDS,
   needsReload,
   ORBIT_SETTING,
   resetDioramaPlacement,
@@ -13,6 +18,7 @@ import {
   VIEW_SETTING,
   useSettingsVersion,
   type Setting,
+  type SettingGroup,
 } from '../config/settings'
 import './SettingsPanel.css'
 
@@ -24,6 +30,7 @@ import './SettingsPanel.css'
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState(loadTab)
+  const [kind, setKind] = useState(loadKind)
   const fullScreen = useFullScreen()
   useSettingsVersion()
   const activeTab = SETTING_TABS[tab] ?? SETTING_TABS[0]
@@ -32,6 +39,15 @@ export function SettingsPanel() {
     setTab(index)
     try {
       localStorage.setItem(TAB_KEY, String(index))
+    } catch {
+      // Not remembered; harmless.
+    }
+  }
+
+  const chooseKind = (k: FlightKind) => {
+    setKind(k)
+    try {
+      localStorage.setItem(KIND_KEY, k)
     } catch {
       // Not remembered; harmless.
     }
@@ -49,9 +65,32 @@ export function SettingsPanel() {
   const is3d = MAP.view === '3d'
   const terrain = MAP.terrain
   const orbit = MAP3D.orbit
+  const { anchor, picking } = useOrbitAnchor()
+  // Buttons the 3D map adds to the left of the others, which the zoom control moves over for.
+  const extraButtons = is3d ? (orbit ? 2 : 1) : 0
   return (
     <>
-      {desktop && <ZoomControl shifted={is3d} />}
+      {desktop && <ZoomControl shift={extraButtons} />}
+      {is3d && orbit && (
+        <button
+          type="button"
+          className={`toolbar-button axis-button${picking ? ' is-on is-picking' : ''}`}
+          aria-label={picking ? 'Cancel placing the orbit point' : anchor ? 'Move the orbit point' : 'Place the orbit point'}
+          aria-pressed={picking !== false}
+          title={
+            picking === 'axis'
+              ? 'Click a spot on the map to stand the axis there (Esc to cancel)'
+              : picking === 'height'
+                ? 'Click to set how high up the axis to orbit around (Esc to cancel)'
+                : anchor
+                  ? 'Move the orbit point: click the map for an axis, then click again for a height up it'
+                  : 'Place the orbit point: click the map for an axis, then click again for a height up it'
+          }
+          onClick={toggleAnchor}
+        >
+          <AxisIcon />
+        </button>
+      )}
       {is3d && (
         <button
           type="button"
@@ -59,7 +98,11 @@ export function SettingsPanel() {
           aria-label={orbit ? 'Stop orbiting' : 'Orbit'}
           aria-pressed={orbit}
           title={orbit ? 'Stop orbiting' : 'Orbit around the point the camera looks at (direction and speed in Settings › 3D Map)'}
-          onClick={() => setSetting(ORBIT_SETTING, !orbit)}
+          onClick={() => {
+            // The orbit point goes with the orbit (the camera stays put, free to pan again).
+            if (orbit) clearAnchor()
+            setSetting(ORBIT_SETTING, !orbit)
+          }}
         >
           <OrbitIcon />
         </button>
@@ -138,10 +181,25 @@ export function SettingsPanel() {
             ))}
           </nav>
           <div className="settings-body" role="tabpanel" aria-label={activeTab.title}>
-            {activeTab.groups.map((group) => (
+            {activeTab.groups.some((g) => g.perKind) && (
+              <KindSwitch kind={kind} onChange={chooseKind} colorOf={(k) => kindColor(activeTab.groups, k)} />
+            )}
+            {activeTab.groups.map((group) => {
+              const kindSettings = group.perKind?.(kind) ?? []
+              if (group.settings.length === 0 && kindSettings.length === 0) return null
+              return (
               <section key={group.title} className="settings-group">
                 <h3>{group.title}</h3>
                 {group.settings.map((s) => (
+                  <SettingRow key={s.path} setting={s} />
+                ))}
+                {kindSettings.length > 0 && (
+                  <h4 className="settings-kind-heading">
+                    <span className="settings-kind-dot" style={{ background: kindColor(activeTab.groups, kind) ?? undefined }} />
+                    {KIND_LABELS[kind]}
+                  </h4>
+                )}
+                {kindSettings.map((s) => (
                   <SettingRow key={s.path} setting={s} />
                 ))}
                 {group.action && (
@@ -150,9 +208,12 @@ export function SettingsPanel() {
                   </button>
                 )}
               </section>
-            ))}
+              )
+            })}
           </div>
           <footer className="settings-footer">
+            <SaveRow />
+            <div className="settings-footer-actions">
             {/* Highlighted when a changed setting only applies after a reload. */}
             {needsReload() ? (
               <button type="button" className="settings-action is-primary" onClick={() => window.location.reload()}>
@@ -166,6 +227,7 @@ export function SettingsPanel() {
             <button type="button" className="settings-action" onClick={resetSettings}>
               Reset all to defaults
             </button>
+            </div>
           </footer>
         </aside>
       )}
@@ -174,10 +236,54 @@ export function SettingsPanel() {
 }
 
 /**
+ * Saves the whole setup for this airport in the layout on screen (portrait or
+ * desktop), and can go back to that save. Highlighted when there are changes
+ * since it was saved.
+ */
+function SaveRow() {
+  const [, rerender] = useState(0)
+  const layout = currentLayout()
+  // Turning the screen switches which save this is about.
+  useEffect(() => {
+    const media = window.matchMedia('(min-aspect-ratio: 1/1)')
+    const update = () => rerender((n) => n + 1)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  const saved = savedAt()
+  const unsaved = hasUnsavedChanges()
+  const where = `${AIRPORT_AT_START} · ${LAYOUT_LABELS[layout]}`
+  return (
+    <div className="settings-save">
+      <span className="settings-save-status">
+        {where}
+        <small>{saved === null ? 'Not saved yet' : unsaved ? 'Changed since saved' : `Saved ${new Date(saved).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`}</small>
+      </span>
+      {saved !== null && unsaved && (
+        <button type="button" className="settings-action" title="Discard changes since the save (reloads)" onClick={revertToSaved}>
+          Revert
+        </button>
+      )}
+      <button
+        type="button"
+        className={`settings-action${unsaved ? ' is-primary' : ''}`}
+        title={`Save the settings, 3D camera and airport view for ${AIRPORT_AT_START} in ${LAYOUT_LABELS[layout].toLowerCase()} layout`}
+        onClick={() => {
+          saveSetup()
+          rerender((n) => n + 1)
+        }}
+      >
+        Save
+      </button>
+    </div>
+  )
+}
+
+/**
  * − 100% + : page zoom, like Ctrl+scroll (desktop app only; a web page can't
  * change the browser's zoom). Clicking the percentage goes back to 100%.
  */
-function ZoomControl({ shifted }: { shifted: boolean }) {
+function ZoomControl({ shift }: { shift: number }) {
   const [factor, setFactor] = useState(1)
   useEffect(() => {
     desktop!.zoomFactor().then(setFactor, () => {})
@@ -186,7 +292,7 @@ function ZoomControl({ shifted }: { shifted: boolean }) {
   const zoom = (direction: number) => desktop!.zoom(direction).then(setFactor, () => {})
   const percent = `${Math.round(factor * 100)}%`
   return (
-    <div className={`zoom-control${shifted ? ' is-shifted' : ''}`} role="group" aria-label="Page zoom">
+    <div className="zoom-control" style={{ right: 222 + shift * 42 }} role="group" aria-label="Page zoom">
       <button type="button" aria-label="Zoom out" title="Zoom out (Ctrl+minus, Ctrl+scroll)" onClick={() => zoom(-1)}>
         −
       </button>
@@ -225,6 +331,51 @@ function loadTab(): number {
     return Number.isInteger(saved) && saved >= 0 && saved < SETTING_TABS.length ? saved : 0
   } catch {
     return 0
+  }
+}
+
+/** Arrivals / Departures / Other switch at the top of a tab, picking the kind its groups show settings for. */
+function KindSwitch({ kind, onChange, colorOf }: { kind: FlightKind; onChange: (kind: FlightKind) => void; colorOf: (kind: FlightKind) => string | null }) {
+  return (
+    <div className="settings-kinds" role="radiogroup" aria-label="Traffic">
+      {KINDS.map((k) => {
+        const color = colorOf(k)
+        return (
+          <button
+            key={k}
+            type="button"
+            role="radio"
+            aria-checked={k === kind}
+            className={`settings-kind${k === kind ? ' is-active' : ''}`}
+            onClick={() => onChange(k)}
+          >
+            {color && <span className="settings-kind-dot" style={{ background: color }} />}
+            {KIND_LABELS[k]}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** The kind's color setting in this tab, for the dots on the switch. */
+function kindColor(groups: SettingGroup[], kind: FlightKind): string | null {
+  for (const g of groups) {
+    const color = g.perKind?.(kind).find((s) => s.type === 'color')
+    if (color) return String(getSetting(color))
+  }
+  return null
+}
+
+/** The traffic kind last picked, remembered in this browser. */
+const KIND_KEY = 'settingsKind'
+
+function loadKind(): FlightKind {
+  try {
+    const saved = localStorage.getItem(KIND_KEY)
+    return KINDS.find((k) => k === saved) ?? 'arrival'
+  } catch {
+    return 'arrival'
   }
 }
 
@@ -353,6 +504,17 @@ function FullScreenIcon({ exit }: { exit: boolean }) {
             : 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'
         }
       />
+    </svg>
+  )
+}
+
+/** A vertical axis standing on a ring on the ground. */
+function AxisIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+      <path d="M12 3v15" strokeDasharray="2.5 2.5" />
+      <ellipse cx="12" cy="18" rx="7" ry="2.5" />
+      <circle cx="12" cy="18" r="1" fill="currentColor" />
     </svg>
   )
 }

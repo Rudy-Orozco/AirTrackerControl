@@ -1,5 +1,5 @@
 import type { Aircraft } from '../feed/api'
-import { AIRPORT_PRESET, FEED, MAP, MOTION } from '../config/config'
+import { AIRPORT_PRESET, FEED, MOTION, trailSecondsFor } from '../config/config'
 import { wasLanding, type Flight } from './flights'
 
 export interface LatLon {
@@ -83,6 +83,11 @@ export interface Handoff {
 }
 
 const TRAIL_SAMPLE_MS = 500
+
+/** Index of the first trail sample within the last `seconds`, for views drawing a shorter trail than is kept. */
+export function trailStart(t: Track, seconds: number) {
+  return Math.max(0, t.trail.length - Math.floor((seconds * 1000) / TRAIL_SAMPLE_MS))
+}
 /** Time constant for easing the reported turn rate used to bank the 3D models (live view)... */
 const TURN_SMOOTHING_MS = 2000
 /** ...and the drawn curve's own turn rate (delayed view), about how long an airliner takes to roll into a turn. */
@@ -421,7 +426,7 @@ export class Tracker {
       if (now - t.lastTrailAt >= TRAIL_SAMPLE_MS) {
         t.trail.push(t.pos)
         t.trailAlt.push(t.altitude)
-        while (t.trail.length > (MAP.trailSeconds * 1000) / TRAIL_SAMPLE_MS) {
+        while (t.trail.length > (trailSecondsFor(t.info.kind) * 1000) / TRAIL_SAMPLE_MS) {
           t.trail.shift()
           t.trailAlt.shift()
         }

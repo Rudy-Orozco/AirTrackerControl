@@ -45,6 +45,16 @@
   right: 222px;
 }
 
+/* While orbiting: place the axis the camera circles. */
+.axis-button {
+  right: 264px;
+}
+
+.axis-button.is-picking {
+  border-color: #4ea2ff;
+  color: #4ea2ff;
+}
+
 /* − 100% + page zoom (desktop app), left of the round buttons. */
 .zoom-control {
   position: absolute;
@@ -57,10 +67,6 @@
   border-radius: 17px;
   background: rgb(3 5 10 / 0.6);
   overflow: hidden;
-}
-
-.zoom-control.is-shifted {
-  right: 264px;
 }
 
 .zoom-control button {
@@ -88,12 +94,14 @@
 .settings-button.is-open,
 .terrain-button.is-on,
 .orbit-button.is-on,
+.axis-button.is-on,
 .fullscreen-button.is-on {
   color: var(--text);
 }
 
 .terrain-button.is-on,
-.orbit-button.is-on {
+.orbit-button.is-on,
+.axis-button.is-on {
   border-color: var(--text-dim);
 }
 
@@ -330,9 +338,103 @@
 }
 
 .settings-footer {
+  padding: 4px 16px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-footer-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 4px 16px 12px;
+}
+
+/* Save for this airport and layout, above the reload and reset buttons. */
+.settings-save {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-save-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.settings-save-status small {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* Arrivals / Departures / Other switch at the top of a tab; stays in view while scrolling. */
+.settings-kinds {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  margin: 8px 0 0;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgb(8 12 20);
+}
+
+.settings-kind {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 12px var(--sans);
+  cursor: pointer;
+}
+
+.settings-kind:hover {
+  color: var(--text);
+}
+
+.settings-kind.is-active {
+  background: rgb(220 230 245 / 0.1);
+  color: var(--text);
+}
+
+.settings-kind-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4);
+}
+
+/* Which kind the settings below it are for. */
+.settings-kind-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 2px;
+  padding-top: 8px;
   border-top: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.settings-group h3 + .settings-kind-heading {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-save .settings-action {
+  margin-top: 0;
 }

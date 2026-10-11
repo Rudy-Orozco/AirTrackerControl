@@ -7,3 +7,8 @@
 .radar.map2d.is-dragging {
   cursor: grabbing;
 }
+
+/* Over an aircraft: a click follows it. */
+.radar.map2d.is-over-aircraft:not(.is-dragging) {
+  cursor: pointer;
+}

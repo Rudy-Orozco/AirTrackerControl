@@ -34,9 +34,11 @@ import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, type Map3DTrafficS
 import { bankOf, pitchOf } from '../diorama/diorama'
 import type { MapLayers } from '../map/mapLayers'
 import { elevationAt, type Terrain } from '../map/terrain'
-import { createProjection, drawTrackLabels, labelFont, renderBackground, type Point } from '../map/renderer'
+import { createProjection, drawFocusBrackets, drawTrackLabels, labelFont, lastOnScreen, renderBackground, type Point } from '../map/renderer'
 import { clearAnchor, orbitAnchor, type OrbitAnchor } from './orbitAnchor'
 import { estimatedPath, predictedPath, trailStart, type LatLon, type Track } from '../tracking/tracker'
+import { greatCircle, distanceNm } from '../lib/greatCircle'
+import type { FocusRoute } from '../tracking/selection'
 
 const FT_PER_NM = 6076.12
 const LON_SCALE = Math.cos((CENTER.lat * Math.PI) / 180)
@@ -52,6 +54,15 @@ function local(p: LatLon) {
 function heightOf(altitudeFt: number | null) {
   if (altitudeFt === null) return 0
   return (Math.max(altitudeFt - AIRPORT_PRESET.elevationFt, 0) / FT_PER_NM) * MAP3D.altitudeScale
+}
+
+/** The aircraft the camera follows (see selection.ts): its hex code and where it's drawn. */
+export interface Focus {
+  hex: string
+  pos: LatLon
+  altitude: number | null
+  /** Its route to its destination (departures) or from its origin (arrivals), if known. */
+  route: FocusRoute | null
 }
 
 /** One aircraft's scene objects. */
@@ -129,6 +140,22 @@ export class Map3D {
   private followed: OrbitAnchor['anchor'] = null
   /** Moving the camera over to orbit around a newly placed axis. */
   private glide: { from: Vector3; to: Vector3; start: number } | null = null
+  /** Where the camera was before it started following an aircraft, to go back to once it's let go. */
+  private home: { position: Vector3; target: Vector3 } | null = null
+  /** Following an aircraft: which, and the glide over to it. */
+  private following: { hex: string; start: number; from: Vector3; fromDistance: number } | null = null
+  /** Gliding back home after letting an aircraft go. */
+  private returning: { start: number; target: Vector3; offset: Vector3 } | null = null
+  /**
+   * The followed flight's route, over the whole way to the other airport: out
+   * past the edge of the map, so not fogged.
+   */
+  private readonly focusRoute = new Line(
+    new BufferGeometry(),
+    new LineDashedMaterial({ vertexColors: true, transparent: true, depthWrite: false, fog: false, dashSize: 0.6, gapSize: 0.45 }),
+  )
+  /** Where each aircraft was drawn on screen last frame, for clicking on one. */
+  private hits: { hex: string; x: number; y: number }[] = []
   private readonly crafts = new Map<Track, Craft>()
   private readonly labels: CanvasRenderingContext2D
   private width = 1
@@ -162,7 +189,7 @@ export class Map3D {
     this.scene.add(this.dots)
     this.waypoints.frustumCulled = false
     this.scene.add(this.waypoints)
-    for (const o of [this.axis, this.axisRing, this.ball]) {
+    for (const o of [this.axis, this.axisRing, this.ball, this.focusRoute]) {
       o.frustumCulled = false
       o.visible = false
       this.scene.add(o)
@@ -250,14 +277,17 @@ export class Map3D {
     clearAnchor()
     this.followed = null
     this.glide = null
+    this.home = null
+    this.following = null
+    this.returning = null
     this.controls.target.set(0, 0, 0)
     this.camera.position.copy(DEFAULT_CAMERA)
     this.controls.update()
     this.saveCamera()
   }
 
-  /** Draws one frame. Call after the tracker has stepped. */
-  render(tracks: Iterable<Track>) {
+  /** Draws one frame, following `focus` if given. Call after the tracker has stepped. */
+  render(tracks: Iterable<Track>, focus: Focus | null = null) {
     // Orbit (MAP3D.orbit): OrbitControls circles the target, holding tilt and distance.
     // A positive speed moves the camera clockwise seen from above.
     const now = performance.now()
@@ -268,6 +298,8 @@ export class Map3D {
     this.controls.autoRotate = MAP3D.orbit && !orbitAnchor().picking
     this.controls.autoRotateSpeed = ((MAP3D.orbitDirection === 'counterclockwise' ? -1 : 1) * MAP3D.orbitSpeed) / 6
     this.followAnchor(now)
+    const focusAt = focus ? new Vector3(local(focus.pos).x, local(focus.pos).y, heightOf(focus.altitude)) : null
+    this.followFocus(now, focus?.hex ?? null, focusAt)
     this.controls.update(dt)
     // Fog only the far side of the map, however far out the camera is zoomed;
     // fixed distances would darken the whole map when zoomed out.
@@ -310,6 +342,11 @@ export class Map3D {
       craft.trail.visible = style.trail
       craft.curtain.visible = style.curtain
       this.updateRoute(craft, t, style, x, y, z, color, opacity)
+      // The followed flight's whole route is drawn on its own instead (see updateFocusRoute).
+      if (focus?.route && t.info.hex === focus.hex) {
+        craft.route.visible = false
+        craft.routeEnd = null
+      }
       this.updatePrediction(craft, t, x, y, z, color, opacity)
       if (MAP.showPredictions && t.info.kind !== 'other') {
         const path = predictedPath(t)
@@ -342,6 +379,8 @@ export class Map3D {
       }
     }
     for (const [t, craft] of this.crafts) if (!seen.has(t)) this.removeCraft(t, craft)
+    this.updateFocusRoute(focus, focusAt)
+    this.hits = shown.map((t, i) => ({ hex: t.info.hex, ...screen[i] }))
 
     this.drops.geometry.setAttribute('position', new BufferAttribute(new Float32Array(drops), 3))
     this.drops.geometry.setAttribute('color', new BufferAttribute(new Float32Array(dropColors), 4))
@@ -355,7 +394,26 @@ export class Map3D {
     ctx.clearRect(0, 0, this.width, this.height)
     if (MAP.showLabels) drawTrackLabels(ctx, shown, MAP3D.traffic, screen)
     this.drawRouteLabels(routeLabels)
+    if (focus?.route && this.focusRoute.visible) this.drawFocusRouteLabel(focus.route)
+    if (focusAt) this.drawFocus(focusAt)
     if (MAP3D.showHud) this.drawHud()
+  }
+
+  /** The aircraft drawn nearest a screen position (client pixels), if one is close enough to count as clicked. */
+  pickAircraft(clientX: number, clientY: number): string | null {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    const x = clientX - rect.left
+    const y = clientY - rect.top
+    let best: string | null = null
+    let bestDistance = PICK_RADIUS_PX
+    for (const hit of this.hits) {
+      const d = Math.hypot(hit.x - x, hit.y - y)
+      if (d < bestDistance) {
+        best = hit.hex
+        bestDistance = d
+      }
+    }
+    return best
   }
 
   /**
@@ -694,6 +752,132 @@ export class Map3D {
     }
   }
 
+  /**
+   * Following an aircraft: remembers where the camera was, glides over to the
+   * aircraft (moving in closer if it's far out) and then keeps it in the middle,
+   * still turning around it with the orbit or a drag. Once it's let go, glides
+   * back to where it was.
+   */
+  private followFocus(now: number, hex: string | null, at: Vector3 | null) {
+    const offset = new Vector3().subVectors(this.camera.position, this.controls.target)
+    if (hex && at) {
+      if (this.following?.hex !== hex) {
+        // Switching aircraft keeps the first one's starting point as home.
+        this.home ??= { position: this.camera.position.clone(), target: this.controls.target.clone() }
+        this.following = { hex, start: now, from: this.controls.target.clone(), fromDistance: offset.length() }
+        this.returning = null
+      }
+      const { start, from, fromDistance } = this.following
+      const eased = 1 - (1 - Math.min((now - start) / FOLLOW_GLIDE_MS, 1)) ** 3
+      if (eased < 1) {
+        const distance = fromDistance + (Math.min(fromDistance, FOLLOW_DISTANCE) - fromDistance) * eased
+        offset.setLength(distance)
+        this.controls.target.lerpVectors(from, at, eased)
+      } else {
+        this.controls.target.copy(at)
+      }
+      this.camera.position.copy(this.controls.target).add(offset)
+      this.controls.enablePan = false
+      return
+    }
+
+    this.following = null
+    if (!this.home) return
+    this.returning ??= { start: now, target: this.controls.target.clone(), offset }
+    const { start, target, offset: from } = this.returning
+    const homeOffset = new Vector3().subVectors(this.home.position, this.home.target)
+    const eased = 1 - (1 - Math.min((now - start) / FOLLOW_GLIDE_MS, 1)) ** 3
+    // Distance and direction blend separately, so the camera swings around rather than cutting through.
+    const length = from.length() + (homeOffset.length() - from.length()) * eased
+    const blended = from.clone().lerp(homeOffset, eased)
+    if (blended.lengthSq() < 1e-9) blended.copy(homeOffset)
+    this.controls.target.lerpVectors(target, this.home.target, eased)
+    this.camera.position.copy(this.controls.target).add(blended.setLength(length))
+    if (eased === 1) {
+      this.home = null
+      this.returning = null
+      this.saveCamera()
+    }
+  }
+
+  /**
+   * Points the followed flight's route line from the aircraft to the other
+   * airport: up to cruise height and level, then down to the ground there.
+   */
+  private updateFocusRoute(focus: Focus | null, at: Vector3 | null) {
+    const route = focus?.route
+    this.focusRoute.visible = !!route && !!at
+    if (!route || !at) return
+    const { points } = route
+    const total = distanceNm(points[0], points[points.length - 1])
+    const cruise = Math.max(heightOf(AIRPORT_PRESET.elevationFt + CRUISE_FT), at.z)
+    const color = new Color(MAP3D.traffic[route.kind].color)
+    const positions = new Float32Array(points.length * 3)
+    const colors = new Float32Array(points.length * 4)
+    points.forEach((p, i) => {
+      const along = (total * i) / (points.length - 1)
+      const climb = Math.min(along / CRUISE_RAMP_NM, 1)
+      const z = Math.min(at.z + (cruise - at.z) * climb * (2 - climb), (cruise * (total - along)) / CRUISE_RAMP_NM)
+      const l = local(p)
+      positions.set(i === 0 ? [at.x, at.y, at.z] : [l.x, l.y, Math.max(z, 0)], i * 3)
+      colors.set([color.r, color.g, color.b, 0.9 - 0.4 * (i / (points.length - 1))], i * 4)
+    })
+    const geometry = this.focusRoute.geometry
+    const attr = geometry.getAttribute('position') as BufferAttribute | undefined
+    if (attr?.count === points.length) {
+      attr.copyArray(positions)
+      attr.needsUpdate = true
+      const colorAttr = geometry.getAttribute('color') as BufferAttribute
+      colorAttr.copyArray(colors)
+      colorAttr.needsUpdate = true
+    } else {
+      geometry.setAttribute('position', new BufferAttribute(positions, 3))
+      geometry.setAttribute('color', new BufferAttribute(colors, 4))
+    }
+    this.focusRoute.computeLineDistances()
+  }
+
+  /** Labels the followed flight's route at the other airport, or where the line leaves the screen. */
+  private drawFocusRouteLabel(route: FocusRoute) {
+    const pos = this.focusRoute.geometry.getAttribute('position') as BufferAttribute
+    const screen: Point[] = []
+    for (let i = 0; i < pos.count; i++) {
+      const p = new Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).project(this.camera)
+      if (p.z >= 1) break
+      screen.push({ x: ((p.x + 1) / 2) * this.width, y: ((1 - p.y) / 2) * this.height })
+    }
+    // Kept clear of the board, in the part of the screen it leaves uncovered (see resize).
+    const at = lastOnScreen(screen, this.width * (1 + this.shift.x), this.height * (1 - this.shift.y), 40)
+    if (!at) return
+    const ctx = this.labels
+    const color = MAP3D.traffic[route.kind].color
+    const right = at.x > (this.width * (1 + this.shift.x)) / 2
+    ctx.save()
+    ctx.fillStyle = color
+    if (at === screen[pos.count - 1]) {
+      ctx.beginPath()
+      ctx.arc(at.x, at.y, 3.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.font = labelFont()
+    ctx.letterSpacing = '1.5px'
+    ctx.textAlign = right ? 'right' : 'left'
+    ctx.textBaseline = 'bottom'
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.9)'
+    ctx.shadowBlur = 4
+    ctx.fillText(route.label, at.x + (right ? -6 : 6), at.y - 6)
+    ctx.restore()
+  }
+
+  /** Brackets around the followed aircraft, so it's easy to spot. */
+  private drawFocus(at: Vector3) {
+    const p = at.clone().project(this.camera)
+    if (p.z >= 1) return
+    const x = ((p.x + 1) / 2) * this.width
+    const y = ((1 - p.y) / 2) * this.height
+    drawFocusBrackets(this.labels, x, y)
+  }
+
   /** Turns dragging, pinching and scrolling the camera on or off (off while a finger aims the orbit point). */
   setControlsEnabled(enabled: boolean) {
     this.controls.enabled = enabled
@@ -759,11 +943,11 @@ export class Map3D {
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert()
   }
 
-  /** Remembers the camera in this browser (also before a setup is saved). */
+  /** Remembers the camera in this browser (also before a setup is saved); while following, where it'll go back to. */
   saveCamera() {
     try {
-      const { position: p } = this.camera
-      const { target: t } = this.controls
+      const p = this.home?.position ?? this.camera.position
+      const t = this.home?.target ?? this.controls.target
       localStorage.setItem(CAMERA_KEY, JSON.stringify({ position: [p.x, p.y, p.z], target: [t.x, t.y, t.z] }))
     } catch {
       // Storage unavailable: the view just won't be remembered.
@@ -837,6 +1021,8 @@ const GROUND_SEGMENTS = 255
 const FT_PER_M = 3.28084
 /** Route lines rise toward this altitude (feet) away from the airport. */
 const CRUISE_FT = 30_000
+/** The followed flight's route climbs to cruise over this many nautical miles, and comes down over as many at the far end. */
+const CRUISE_RAMP_NM = 120
 
 /** Points a dashed line along `path` (at altitude), or hides it when null or empty. `start` overrides the first point. */
 function setPathLine(
@@ -875,6 +1061,12 @@ const HUD_ALT_WIDTH = 90
 const HUD_PX_PER_DEG = 3
 const COMPASS: Record<number, string> = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }
 
+/** How close (pixels) a click has to be to an aircraft to pick it. */
+const PICK_RADIUS_PX = 24
+/** How long the camera takes to glide to a picked aircraft and back, and how close it moves in. */
+const FOLLOW_GLIDE_MS = 1200
+const FOLLOW_DISTANCE = DEFAULT_DISTANCE * 0.3
+
 const AXIS_COLOR = 0xe8eef8
 const AXIS_GLIDE_MS = 1200
 
@@ -902,31 +1094,6 @@ function ringGeometry() {
 
 function rad(deg: number) {
   return (deg * Math.PI) / 180
-}
-
-/**
- * Points along the great circle from `from` toward `to`, stopping after
- * `maxNm` nautical miles (or at `to`, if closer).
- */
-function greatCircle(from: LatLon, to: LatLon, maxNm: number, segments: number): LatLon[] {
-  const toVec = ({ lat, lon }: LatLon) => {
-    const [φ, λ] = [rad(lat), rad(lon)]
-    return [Math.cos(φ) * Math.cos(λ), Math.cos(φ) * Math.sin(λ), Math.sin(φ)]
-  }
-  const a = toVec(from)
-  const b = toVec(to)
-  const angle = Math.acos(Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])))
-  if (angle < 1e-9) return [from, to]
-  // Central angle covered: maxNm of arc, or the whole way.
-  const reach = Math.min(angle, rad(maxNm / 60))
-  const points: LatLon[] = []
-  for (let i = 0; i <= segments; i++) {
-    const f = (reach * i) / segments
-    const [wa, wb] = [Math.sin(angle - f) / Math.sin(angle), Math.sin(f) / Math.sin(angle)]
-    const [x, y, z] = [wa * a[0] + wb * b[0], wa * a[1] + wb * b[1], wa * a[2] + wb * b[2]]
-    points.push({ lat: (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI, lon: (Math.atan2(y, x) * 180) / Math.PI })
-  }
-  return points
 }
 
 /** Moving average over up to `radius` neighbours, narrowing at the ends so they stay put. */

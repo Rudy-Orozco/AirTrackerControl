@@ -453,3 +453,90 @@ function label(t: Track) {
   return `${callsign} ${Math.round(altitude / 100).toString().padStart(3, '0')}`
 }
 
+
+/** Corner brackets around the followed aircraft (see selection.ts), on the flat map and over the 3D one. */
+export function drawFocusBrackets(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const r = FOCUS_BRACKET_PX
+  const arm = r * 0.45
+  ctx.save()
+  ctx.globalAlpha = 0.9
+  ctx.strokeStyle = '#f1f3f6'
+  ctx.lineWidth = 1.5
+  ctx.lineCap = 'square'
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+  ctx.shadowBlur = 4
+  ctx.beginPath()
+  for (const [sx, sy] of [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ]) {
+    ctx.moveTo(x + sx * r, y + sy * (r - arm))
+    ctx.lineTo(x + sx * r, y + sy * r)
+    ctx.lineTo(x + sx * (r - arm), y + sy * r)
+  }
+  ctx.stroke()
+  ctx.restore()
+}
+
+const FOCUS_BRACKET_PX = 16
+
+/**
+ * The followed flight's route on the flat map (see selection.ts): a dashed line
+ * from the aircraft to its origin or destination, labelled where it reaches the
+ * airport or, if that's off screen, where it leaves the map. `width` and
+ * `height` are the area to keep the label in (the part the board leaves uncovered).
+ */
+export function drawFocusRoute(
+  ctx: CanvasRenderingContext2D,
+  route: { points: LatLon[]; label: string },
+  project: Projection,
+  color: string,
+  width: number,
+  height: number,
+) {
+  const points = route.points.map(project)
+  ctx.save()
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1.5
+  ctx.globalAlpha = 0.85
+  ctx.setLineDash([6, 5])
+  ctx.beginPath()
+  points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  const at = lastOnScreen(points, width, height, ROUTE_LABEL_MARGIN_PX)
+  if (at) {
+    const end = at === points[points.length - 1]
+    ctx.fillStyle = color
+    if (end) {
+      ctx.beginPath()
+      ctx.arc(at.x, at.y, 3.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.font = labelFont()
+    ctx.letterSpacing = '1.5px'
+    ctx.textAlign = at.x > width / 2 ? 'right' : 'left'
+    ctx.textBaseline = 'bottom'
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.9)'
+    ctx.shadowBlur = 4
+    ctx.globalAlpha = 1
+    ctx.fillText(route.label, at.x + (at.x > width / 2 ? -6 : 6), at.y - 6)
+  }
+  ctx.restore()
+}
+
+/** The farthest point along `points` before the line first leaves the screen (less `margin`), or null if it starts off screen. */
+export function lastOnScreen<T extends Point>(points: T[], width: number, height: number, margin: number): T | null {
+  let last: T | null = null
+  for (const p of points) {
+    if (p.x < margin || p.y < margin || p.x > width - margin || p.y > height - margin) break
+    last = p
+  }
+  return last
+}
+
+/** How far in from the screen's edge a route's label stays. */
+const ROUTE_LABEL_MARGIN_PX = 40

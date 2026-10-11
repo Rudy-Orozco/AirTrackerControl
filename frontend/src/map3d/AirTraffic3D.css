@@ -17,3 +17,8 @@
 .radar.map3d.is-picking:active {
   cursor: crosshair;
 }
+
+/* Over an aircraft: a click follows it. */
+.radar.map3d.is-over-aircraft:not(.is-picking) {
+  cursor: pointer;
+}

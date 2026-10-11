@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { AirportDiorama } from './diorama/AirportDiorama'
 import { AirTraffic3D } from './map3d/AirTraffic3D'
 import { AirTrafficCanvas } from './map/AirTrafficCanvas'
+import { AircraftPanel } from './ui/AircraftPanel'
 import { AirportLogo } from './ui/AirportLogo'
 import { Board } from './board/Board'
 import { BootScreen } from './ui/BootScreen'
@@ -23,13 +24,14 @@ export default function App() {
   return (
     <main className="app">
       {MAP.view === '3d' ? (
-        <AirTraffic3D tracker={tracker} overlay={boardRef} />
+        <AirTraffic3D tracker={tracker} ground={ground} overlay={boardRef} />
       ) : (
-        <AirTrafficCanvas tracker={tracker} overlay={boardRef} />
+        <AirTrafficCanvas tracker={tracker} ground={ground} overlay={boardRef} />
       )}
       {DIORAMA.enabled && <AirportDiorama tracker={tracker} ground={ground} />}
       <AirportLogo />
       <Board board={board} status={status} ref={boardRef} />
+      <AircraftPanel tracker={tracker} ground={ground} board={board} />
       <BootScreen boot={boot} />
       <SettingsPanel />
     </main>

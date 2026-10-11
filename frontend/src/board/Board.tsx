@@ -6,6 +6,7 @@ import { AtisStrip } from '../weather/AtisStrip'
 import { MetarStrip } from '../weather/MetarStrip'
 import { formatLocalDate, formatLocalTime, localZoneName } from './localTime'
 import { useTick } from '../lib/useTick'
+import { selectAircraft, useSelectedAircraft } from '../tracking/selection'
 import type { FeedStatus } from '../feed/useAircraftFeed'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
 import './Board.css'
@@ -86,6 +87,7 @@ function Panel({
   const visible = rows.slice(page * perPage, (page + 1) * perPage)
   const isArrivals = kind === 'arrivals'
   const shownEvent = useUntilExpired(event)
+  const selected = useSelectedAircraft()
 
   return (
     <div className={`panel panel--${kind}`}>
@@ -114,14 +116,15 @@ function Panel({
       {/* Rows are keyed by position, not flight, so the same tiles flip to new content. */}
       <ol className="panel-rows">
         {Array.from({ length: perPage }, (_, i) => (
-          <Row key={i} row={visible[i]} index={i} />
+          <Row key={i} row={visible[i]} index={i} selected={!!visible[i] && visible[i].hex === selected} />
         ))}
       </ol>
     </div>
   )
 }
 
-function Row({ row, index }: { row: BoardRow | undefined; index: number }) {
+/** A flight's row; clicking it follows the flight on the map (and again lets it go). */
+function Row({ row, index, selected }: { row: BoardRow | undefined; index: number; selected: boolean }) {
   const { rowStaggerMs, charStaggerMs } = BOARD.flip
   const widths = columns()
   const texts = row
@@ -131,7 +134,24 @@ function Row({ row, index }: { row: BoardRow | undefined; index: number }) {
   // Each column picks up the cascade where the previous one left off.
   let offset = 0
   return (
-    <li className={`panel-grid row${row?.landed ? ' is-landed' : ''}`}>
+    <li
+      className={`panel-grid row${row?.landed ? ' is-landed' : ''}${row ? ' is-selectable' : ''}${selected ? ' is-selected' : ''}`}
+      onClick={row ? () => selectAircraft(selected ? null : row.hex) : undefined}
+      onKeyDown={
+        row
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                selectAircraft(selected ? null : row.hex)
+              }
+            }
+          : undefined
+      }
+      role={row ? 'button' : undefined}
+      tabIndex={row ? 0 : undefined}
+      aria-pressed={row ? selected : undefined}
+      title={row ? (selected ? 'Stop following' : `Follow ${row.flight} on the map`) : undefined}
+    >
       {texts.map((text, col) => {
         const delay = index * rowStaggerMs + offset * charStaggerMs
         offset += widths[col] + 1

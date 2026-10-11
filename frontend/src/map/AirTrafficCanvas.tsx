@@ -1,8 +1,10 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { CENTER, VIEW_RADIUS_NM } from '../config/config'
+import { CENTER, MAP, VIEW_RADIUS_NM } from '../config/config'
 import { watchMapLayers, type MapLayers } from './mapLayers'
-import { createProjection, createView, drawTracks, labelFont, renderBackground } from './renderer'
+import { createProjection, createView, drawFocusBrackets, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
 import { settingsVersion } from '../config/settings'
+import type { GroundTracker } from '../tracking/groundTracker'
+import { locateAircraft, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
 import type { Tracker } from '../tracking/tracker'
 import { uncoveredArea } from '../lib/layout'
 import { isDoubleTap, TAP_SLOP_PX, type Tap } from '../lib/touch'
@@ -16,8 +18,18 @@ import './AirTrafficCanvas.css'
  * area the board leaves uncovered.
  *
  * Drag to pan the map; double-click to put the airport back in the middle.
+ * Click an aircraft (or pick one on the board) to follow it in the middle of the
+ * map until it's let go, when the map slides back to where it was.
  */
-export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overlay: RefObject<HTMLElement | null> }) {
+export function AirTrafficCanvas({
+  tracker,
+  ground,
+  overlay,
+}: {
+  tracker: Tracker
+  ground: GroundTracker
+  overlay: RefObject<HTMLElement | null>
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -36,6 +48,16 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
     let dragging: { startX: number; startY: number; dx: number; dy: number } | null = null
     // The centered view for the current size, before panning.
     let baseView = view
+    // The part of the map the board leaves uncovered, from the top-left corner.
+    let visible = { width: 1, height: 1 }
+    // The pan the background was last drawn at; drawn shifted while the map slides along after an aircraft.
+    let bakedPan = pan
+    let bakedAt = 0
+    // Where the map was panned before following an aircraft, to slide back to after.
+    let home: { x: number; y: number } | null = null
+    let lastFrame = performance.now()
+    // Where each aircraft was drawn last frame, for clicking on one.
+    let hits: { hex: string; at: Point }[] = []
 
     /** Rebuilds the view and projection from the size and the pan. */
     const placeView = () => {
@@ -44,6 +66,8 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
     }
 
     const redrawBackground = () => {
+      bakedPan = pan
+      bakedAt = performance.now()
       background = renderBackground(width, height, dpr, view, project, layers.basemap, layers.radar, layers.terrain)
     }
 
@@ -54,7 +78,7 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
       canvas.width = width * dpr
       canvas.height = height * dpr
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      const visible = uncoveredArea(width, height, overlay.current)
+      visible = uncoveredArea(width, height, overlay.current)
       baseView = createView(visible.width, visible.height, VIEW_RADIUS_NM)
       placeView()
       redrawBackground()
@@ -90,11 +114,19 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
     const onPointerUp = (e: PointerEvent) => {
       if (!dragging) return
       const tapped = Math.hypot(dragging.dx, dragging.dy) < TAP_SLOP_PX
-      pan = { x: pan.x + dragging.dx, y: pan.y + dragging.dy }
+      // While following, the aircraft holds the map in place.
+      if (!home) pan = { x: pan.x + dragging.dx, y: pan.y + dragging.dy }
       dragging = null
       canvas.classList.remove('is-dragging')
       placeView()
       redrawBackground()
+      if (tapped && e.type === 'pointerup') {
+        const hex = aircraftAt(e.clientX, e.clientY)
+        if (hex) {
+          selectAircraft(hex)
+          return
+        }
+      }
       // Touchscreens don't reliably send dblclick: two quick taps re-center too.
       if (e.type === 'pointerup' && e.pointerType !== 'mouse' && tapped) {
         if (isDoubleTap(lastTap, e)) {
@@ -105,11 +137,65 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
     }
     let lastTap: Tap | null = null
     const onDoubleClick = () => {
+      if (home) return
       pan = { x: 0, y: 0 }
       placeView()
       redrawBackground()
     }
+    /** The aircraft drawn nearest a point (client pixels), if close enough to count as clicked. */
+    const aircraftAt = (clientX: number, clientY: number) => {
+      const rect = canvas.getBoundingClientRect()
+      let best: string | null = null
+      let bestDistance = PICK_RADIUS_PX
+      for (const { hex, at } of hits) {
+        const d = Math.hypot(at.x - (clientX - rect.left), at.y - (clientY - rect.top))
+        if (d < bestDistance) {
+          best = hex
+          bestDistance = d
+        }
+      }
+      return best
+    }
+    const onHover = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && !dragging) canvas.classList.toggle('is-over-aircraft', aircraftAt(e.clientX, e.clientY) !== null)
+    }
+
+    /**
+     * Slides the map so the followed aircraft stays in the middle, easing over to
+     * it at first; once it's let go, slides back to where the map was.
+     */
+    const follow = (now: number) => {
+      const dt = Math.min(now - lastFrame, 100)
+      lastFrame = now
+      const hex = selectedAircraft()
+      const focus = hex ? locateAircraft(hex, tracker, ground) : null
+      let goal: { x: number; y: number } | null = null
+      if (focus) {
+        home ??= pan
+        const at = createProjection(baseView, CENTER)(focus.pos)
+        goal = { x: baseView.cx - at.x, y: baseView.cy - at.y }
+      } else if (home) {
+        goal = home
+      }
+      if (!goal) return null
+      const ease = 1 - Math.exp(-dt / FOLLOW_EASE_MS)
+      pan = { x: pan.x + (goal.x - pan.x) * ease, y: pan.y + (goal.y - pan.y) * ease }
+      if (!focus && Math.hypot(goal.x - pan.x, goal.y - pan.y) < 0.5) {
+        pan = goal
+        home = null
+        placeView()
+        redrawBackground()
+        return null
+      }
+      placeView()
+      // Redraw the background now and then as it slides along, rather than every frame.
+      const drift = Math.hypot(pan.x - bakedPan.x, pan.y - bakedPan.y)
+      if (drift > Math.min(width, height) * 0.2 || (drift > 0.5 && now - bakedAt > REBAKE_MS)) redrawBackground()
+      return focus
+    }
+
     canvas.addEventListener('pointerdown', onPointerDown)
+    canvas.addEventListener('pointermove', onHover)
     canvas.addEventListener('pointermove', onPointerMove)
     canvas.addEventListener('pointerup', onPointerUp)
     canvas.addEventListener('pointercancel', onPointerUp)
@@ -123,16 +209,33 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
         redrawBackground()
       }
       tracker.step(now)
-      if (dragging && (dragging.dx || dragging.dy)) {
+      ground.step(now)
+      const focus = follow(now)
+      // How far the map has moved since the background was drawn: by a drag, or following an aircraft.
+      const drag = dragging && !home ? { x: dragging.dx, y: dragging.dy } : { x: 0, y: 0 }
+      const dx = pan.x + drag.x - bakedPan.x
+      const dy = pan.y + drag.y - bakedPan.y
+      let drawn = project
+      if (dx || dy) {
         // Slide the cached background; what it doesn't cover yet is plain backdrop.
         ctx.fillStyle = BACKDROP
         ctx.fillRect(0, 0, width, height)
-        ctx.drawImage(background, dragging.dx, dragging.dy, width, height)
-        const moved = { ...view, cx: view.cx + dragging.dx, cy: view.cy + dragging.dy }
-        drawTracks(ctx, tracker.tracks.values(), createProjection(moved, CENTER))
+        ctx.drawImage(background, dx, dy, width, height)
+        drawn = createProjection({ ...view, cx: view.cx + drag.x, cy: view.cy + drag.y }, CENTER)
       } else {
         ctx.drawImage(background, 0, 0, width, height)
-        drawTracks(ctx, tracker.tracks.values(), project)
+      }
+      // The followed flight's route to its destination or from its origin, under the aircraft.
+      const route = focus && routeOf(focus)
+      if (route) drawFocusRoute(ctx, route, drawn, MAP.traffic[route.kind].color, visible.width, visible.height)
+      drawTracks(ctx, tracker.tracks.values(), drawn)
+      hits = []
+      for (const t of tracker.tracks.values()) {
+        if (t.opacity > 0 && MAP.traffic[t.info.kind].show) hits.push({ hex: t.info.hex, at: drawn(t.pos) })
+      }
+      if (focus) {
+        const at = drawn(focus.pos)
+        drawFocusBrackets(ctx, at.x, at.y)
       }
       frame = requestAnimationFrame(loop)
     })
@@ -142,15 +245,23 @@ export function AirTrafficCanvas({ tracker, overlay }: { tracker: Tracker; overl
       cancelAnimationFrame(frame)
       observer.disconnect()
       canvas.removeEventListener('pointerdown', onPointerDown)
+      canvas.removeEventListener('pointermove', onHover)
       canvas.removeEventListener('pointermove', onPointerMove)
       canvas.removeEventListener('pointerup', onPointerUp)
       canvas.removeEventListener('pointercancel', onPointerUp)
       canvas.removeEventListener('dblclick', onDoubleClick)
     }
-  }, [tracker, overlay])
+  }, [tracker, ground, overlay])
 
-  return <canvas ref={canvasRef} className="radar map2d" title="Drag to move the map · double-click to recenter" />
+  return <canvas ref={canvasRef} className="radar map2d" title="Drag to move the map · double-click to recenter · click an aircraft to follow it" />
 }
+
+/** How close (pixels) a click has to be to an aircraft to pick it. */
+const PICK_RADIUS_PX = 20
+/** Time constant (ms) of the map's slide toward a followed aircraft, and back. */
+const FOLLOW_EASE_MS = 180
+/** While following, the background is redrawn at least this often (ms) as the map slides. */
+const REBAKE_MS = 1500
 
 /** The map's backdrop color at its edges, for uncovered areas while dragging. */
 const BACKDROP = '#03050a'

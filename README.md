@@ -23,7 +23,7 @@ The default airport is set in `frontend/.env` (`VITE_AIRPORT`); override it with
 
 ```
 frontend/
-  airports.json        airport presets (name, ICAO, position, time zone, logo)
+  airports.json        airport presets (name, ICAO, position, time zone, country, usual busy hours, logo)
   api-routes.mjs       upstream API proxy routes, shared by Vite and Electron
   electron/            desktop app shell (main process, preload, launcher)
   public/basemaps/     prebuilt map data per airport (see scripts/)

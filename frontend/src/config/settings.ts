@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { FlightKind } from '../tracking/flights'
 import { AIRPORT, CONFIG_DEFAULTS, getConfigValue, loadSavedSettings, PRESETS, setConfigValue, SETTINGS_KEY } from './config'
+import { TRAFFIC_ICONS, trafficLevel } from './traffic'
 
 /**
  * The settings panel's catalogue: which config values it offers and how. Values
@@ -17,7 +18,7 @@ export type Setting = {
 } & (
   | { type: 'toggle' }
   | { type: 'color' }
-  | { type: 'select'; options: { value: string; label: string }[] }
+  | { type: 'select'; options: { value: string; label: string; group?: string }[] }
   | {
       type: 'range'
       min: number
@@ -284,8 +285,14 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           {
             path: 'AIRPORT',
             label: 'Airport',
+            hint: `Grouped by country. Usually, at local time now: ${TRAFFIC_ICONS.busy} busy · ${TRAFFIC_ICONS.slow} slow · ${TRAFFIC_ICONS.dead} dead`,
             type: 'select',
-            options: Object.entries(PRESETS).map(([code, p]) => ({ value: code, label: `${code} · ${p.name}` })),
+            // A getter, so each time the panel draws it the busy/slow/dead marks are for the time then.
+            get options() {
+              return Object.entries(PRESETS)
+                .sort(([a, p], [b, q]) => p.country.localeCompare(q.country) || a.localeCompare(b))
+                .map(([code, p]) => ({ value: code, label: `${TRAFFIC_ICONS[trafficLevel(p)]} ${code} · ${p.name}`, group: p.country }))
+            },
             reload: true,
           },
         ],

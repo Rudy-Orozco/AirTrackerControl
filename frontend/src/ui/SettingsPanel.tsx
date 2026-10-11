@@ -445,16 +445,29 @@ function Control({ id, setting, value }: { id: string; setting: Setting; value: 
       )
     case 'color':
       return <input id={id} type="color" value={String(value)} onChange={(e) => setSetting(setting, e.target.value)} />
-    case 'select':
+    case 'select': {
+      const option = (o: { value: string; label: string }) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      )
+      // Options with a group go under its heading, in the order the groups first appear.
+      const groups = new Map<string, typeof setting.options>()
+      for (const o of setting.options) groups.set(o.group ?? '', [...(groups.get(o.group ?? '') ?? []), o])
       return (
         <select id={id} value={String(value)} onChange={(e) => setSetting(setting, e.target.value)}>
-          {setting.options.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
+          {[...groups].map(([group, options]) =>
+            group ? (
+              <optgroup key={group} label={group}>
+                {options.map(option)}
+              </optgroup>
+            ) : (
+              options.map(option)
+            ),
+          )}
         </select>
       )
+    }
     case 'range': {
       const scale = setting.scale ?? 1
       const shown = Number(value) / scale

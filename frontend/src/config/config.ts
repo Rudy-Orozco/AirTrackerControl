@@ -71,6 +71,13 @@ export interface AirportPreset {
   radiusNm: number
   /** IANA time zone, e.g. America/New_York: every time on screen is the airport's local time. */
   timeZone: string
+  /** Groups the airport picker in the settings panel. */
+  country: string
+  /**
+   * When it's usually busy or dead, as [from, to) local hours (a range may wrap
+   * past midnight, e.g. [23, 5]); any other hour is slow. See traffic.ts.
+   */
+  traffic: { busy: number[][]; dead: number[][] }
   /** The airport's logo, shown in the top-left corner: a path under public/, e.g. "/logos/JFK.svg". */
   logo?: string
 }

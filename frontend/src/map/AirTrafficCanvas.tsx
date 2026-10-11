@@ -1,7 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { CENTER, MAP, VIEW_RADIUS_NM } from '../config/config'
 import { watchMapLayers, type MapLayers } from './mapLayers'
-import { createProjection, createView, drawFocusBrackets, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
+import { createProjection, createView, drawAssistPaths, drawFocusBrackets, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
 import { settingsVersion } from '../config/settings'
 import type { GroundTracker } from '../tracking/groundTracker'
 import { locateAircraft, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
@@ -224,6 +224,20 @@ export function AirTrafficCanvas({
         drawn = createProjection({ ...view, cx: view.cx + drag.x, cy: view.cy + drag.y }, CENTER)
       } else {
         ctx.drawImage(background, 0, 0, width, height)
+      }
+      // The landing and takeoff paths aircraft are being guided along, under them.
+      if (MAP.showAssistPaths) {
+        const paths = []
+        for (const t of tracker.tracks.values()) {
+          const path = t.opacity > 0 ? tracker.assistPath(t) : null
+          if (path) paths.push({ ...path, opacity: t.opacity })
+        }
+        // Departures still on the ground: lined up, or rolling.
+        for (const g of ground.tracks.values()) {
+          const path = g.opacity > 0 ? tracker.groundAssistPath(g) : null
+          if (path) paths.push({ ...path, opacity: g.opacity })
+        }
+        drawAssistPaths(ctx, paths, drawn)
       }
       // The followed flight's route to its destination or from its origin, under the aircraft.
       const route = focus && routeOf(focus)

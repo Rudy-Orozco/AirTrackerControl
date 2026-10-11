@@ -43,11 +43,6 @@ export function buildAirportModel(layout: AirportLayout, toLocal: (p: [number, n
     group.add(mesh)
   }
 
-  // The airfield's grass, covering the map's own (much widened) runway drawing beneath.
-  const all = [...layout.runways.flatMap((r) => local(r.line)), ...layout.aprons.flatMap(local), ...layout.taxiways.flatMap(local)]
-  const field = polygon(expand(hull(all), FIELD_MARGIN_M / M_PER_NM))
-  if (field) layer(field, FIELD_COLOR, 0.5)
-
   // Aprons: filled outlines.
   const aprons = layout.aprons.map((ring) => polygon(local(ring))).filter((g) => g !== null)
   if (aprons.length) layer(merge(aprons), APRON_COLOR, 1)
@@ -152,9 +147,6 @@ const GAP_M = 24
 const STRIPE_M = 1
 const THRESHOLD_LENGTH_M = 45
 const LIGHT_SPACING_M = 60
-/** How far the airfield's grass reaches past its outermost pavement. */
-const FIELD_MARGIN_M = 400
-const FIELD_COLOR = 0x0a0e14
 const APRON_COLOR = 0x1b2029
 const TAXIWAY_COLOR = 0x2a303b
 const RUNWAY_COLOR = 0x20252e
@@ -162,6 +154,25 @@ const MARKING_COLOR = 0xc9d0dc
 const EDGE_LIGHT_COLOR = 0xfff1d0
 const THRESHOLD_LIGHT_COLOR = 0x6dff9a
 const BUILDING_COLORS = { terminal: 0x7d8899, hangar: 0x5d6675 }
+
+/**
+ * The map's own simple runways (as on the flat map: pale bars, much wider than
+ * real so they show from afar), laid flat on the ground. Shown in place of the
+ * airport model when it's off or the camera's too far away for it.
+ */
+export function buildMapRunways(lines: Line[], toLocal: (p: [number, number]) => Vector2, widthNm: number) {
+  const bars = new Ribbons()
+  for (const line of lines) bars.polyline(line.map(toLocal), widthNm)
+  const mesh = new Mesh(
+    bars.geometry(),
+    new MeshBasicMaterial({ color: MAP_RUNWAY_COLOR, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 }),
+  )
+  mesh.frustumCulled = false
+  return mesh
+}
+
+/** The flat map's runway color (pale blue-grey at 45%) as it comes out over the dark ground, solid so overlapping bars don't add up. */
+const MAP_RUNWAY_COLOR = 0x58616f
 
 /**
  * A line through `points` measured along its length: `at(d)` is the point `d`
@@ -215,29 +226,6 @@ class Ribbons {
 function polygon(points: Vector2[]) {
   const ring = open(points)
   return ring.length < 3 ? null : new ShapeGeometry(new Shape(ring))
-}
-
-/** The convex hull of some points, counterclockwise (Andrew's monotone chain). */
-function hull(points: Vector2[]) {
-  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y)
-  if (sorted.length < 3) return sorted
-  const cross = (o: Vector2, a: Vector2, b: Vector2) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-  const half = (list: Vector2[]) => {
-    const out: Vector2[] = []
-    for (const p of list) {
-      while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop()
-      out.push(p)
-    }
-    out.pop()
-    return out
-  }
-  return [...half(sorted), ...half([...sorted].reverse())]
-}
-
-/** Pushes a convex outline `by` outward, each corner away from the middle. */
-function expand(points: Vector2[], by: number) {
-  const middle = points.reduce((m, p) => m.add(p), new Vector2()).divideScalar(Math.max(points.length, 1))
-  return points.map((p) => p.clone().add(p.clone().sub(middle).normalize().multiplyScalar(by)))
 }
 
 /** Rings come closed (first point repeated); shapes want them open. */

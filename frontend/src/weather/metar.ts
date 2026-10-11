@@ -23,6 +23,13 @@ export interface Metar {
   fltCat?: FlightCategory
 }
 
+/** The airport's latest altimeter setting (hPa), for turning reported pressure altitudes into true ones; null until a METAR has one. */
+let latestAltimeter: number | null = null
+
+export function altimeterHpa() {
+  return latestAltimeter
+}
+
 async function fetchMetar(icao: string, signal: AbortSignal): Promise<Metar | null> {
   const res = await fetch(`/api/metar?ids=${icao}`, {
     signal: AbortSignal.any([signal, AbortSignal.timeout(FEED.requestTimeoutMs)]),
@@ -34,6 +41,7 @@ async function fetchMetar(icao: string, signal: AbortSignal): Promise<Metar | nu
   if (!newest) return null
   // Fields the service couldn't decode are left out rather than null.
   const { temp, dewp, wdir, wspd, visib, altim } = newest
+  if (altim != null) latestAltimeter = altim
   return { ...newest, temp: temp ?? null, dewp: dewp ?? null, wdir: wdir ?? null, wspd: wspd ?? null, visib: visib ?? null, altim: altim ?? null }
 }
 

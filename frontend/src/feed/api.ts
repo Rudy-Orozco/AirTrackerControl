@@ -1,3 +1,4 @@
+import { altimeterHpa } from '../weather/metar'
 import { CENTER, FEED, FETCH_RADIUS_NM } from '../config/config'
 
 export interface Aircraft {
@@ -7,6 +8,8 @@ export interface Aircraft {
   lon: number
   /** Degrees clockwise from true north, or null if unknown. */
   track: number | null
+  /** Which way the nose points (degrees from true north), when the aircraft sends it; differs from `track` while pushing back. */
+  trueHeading: number | null
   /** Ground speed in knots, or null if unknown. */
   groundSpeed: number | null
   /** Barometric altitude in feet, or null if unknown. */
@@ -109,6 +112,28 @@ function deliveryDelay(source: string, json: unknown): number {
   return (gap - quickest) / 1000
 }
 
+/**
+ * Aircraft report pressure altitude: measured against standard pressure
+ * (1013.25 hPa, 29.92 inHg), not the day's. Low down that can be hundreds of
+ * feet off the real height, enough to put a departure under the runway or an
+ * arrival on it while still on final. Below the transition altitude, correct it
+ * with the airport's altimeter setting (about 1,000 ft per inch of mercury);
+ * above it, flight levels are pressure altitudes, so leave them, easing between.
+ */
+function trueAltitude(pressureFt: number) {
+  const altim = altimeterHpa()
+  if (altim === null) return pressureFt
+  const correction = (altim - STANDARD_HPA) * FT_PER_HPA
+  const weight = Math.min(Math.max((TRANSITION_FT - pressureFt) / TRANSITION_EASE_FT, 0), 1)
+  return pressureFt + correction * weight
+}
+
+const STANDARD_HPA = 1013.25
+const FT_PER_HPA = 1000 / 33.8639
+/** US transition altitude, below which altitudes are set to the local altimeter; eased over the stretch below it. */
+const TRANSITION_FT = 18_000
+const TRANSITION_EASE_FT = 3_000
+
 function parseAircraft(json: unknown, delaySeconds: number): Aircraft[] {
   // adsb.lol calls the list "ac"; adsb.fi and a local readsb aircraft.json call it "aircraft".
   const data = json as { ac?: RawAircraft[]; aircraft?: RawAircraft[] }
@@ -122,8 +147,9 @@ function parseAircraft(json: unknown, delaySeconds: number): Aircraft[] {
       lat: a.lat,
       lon: a.lon,
       track: a.track ?? a.true_heading ?? null,
+      trueHeading: a.true_heading ?? null,
       groundSpeed: a.gs ?? null,
-      altitude: typeof a.alt_baro === 'number' ? a.alt_baro : null,
+      altitude: typeof a.alt_baro === 'number' ? trueAltitude(a.alt_baro) : null,
       onGround: a.alt_baro === 'ground',
       verticalRate: a.baro_rate ?? a.geom_rate ?? null,
       aircraftType: a.t ?? null,

@@ -102,6 +102,14 @@ const trailSettings = (p: (key: string) => string): Setting[] => [
   { path: p('trailSmoothing'), label: 'Smoothing', type: 'range', min: 0, max: 16, step: 1 },
 ]
 
+/** Applies to both maps, so it's in both tabs. */
+const ASSIST_PATHS_SETTING: Setting = {
+  path: 'MAP.showAssistPaths',
+  label: 'Show landing and takeoff paths',
+  hint: 'The glide path and climb-out aircraft are guided along near the runways, 2D and 3D',
+  type: 'toggle',
+}
+
 /** The panel's tabs, each a few groups. */
 export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
   {
@@ -121,6 +129,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
         settings: [
           { path: 'MAP.planeSize', label: 'Size on the 2D map', type: 'range', min: 4, max: 20, step: 1, unit: 'px' },
           { path: 'MAP.showPredictions', label: 'Show predicted positions', hint: 'Path to the next update for arrivals and departures, 2D and 3D', type: 'toggle' },
+          ASSIST_PATHS_SETTING,
         ],
         perKind: perKind('MAP', styleSettings),
       },
@@ -161,6 +170,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'MAP3D.planeSize', label: 'Size', hint: 'At the starting camera distance', type: 'range', min: 3, max: 30, step: 1, unit: 'px' },
           { path: 'MAP3D.fixedScreenSize', label: 'Same size at any zoom', hint: 'Off: aircraft grow as you zoom in', type: 'toggle' },
           { path: 'MAP3D.altitudeScale', label: 'Altitude exaggeration', hint: 'Terrain too', type: 'range', min: 1, max: 12, step: 0.5, unit: '×' },
+          ASSIST_PATHS_SETTING,
         ],
         perKind: perKind('MAP3D', (p) => [
           ...styleSettings(p),
@@ -339,6 +349,18 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
               { value: '2', label: '2 (about one update behind)' },
               { value: '3', label: '3 (about two updates behind)' },
             ],
+          },
+          {
+            path: 'MOTION.runwayAssist',
+            label: 'Runway assist',
+            hint: 'Lines approaches and climb-outs up with the runways, and plays out takeoffs between updates',
+            type: 'toggle',
+          },
+          {
+            path: 'MOTION.taxiwaySnap',
+            label: 'Keep ground traffic on taxiways',
+            hint: 'Moving aircraft follow the taxiway and runway centerlines',
+            type: 'toggle',
           },
         ],
       },

@@ -48,6 +48,10 @@ export function AirTraffic3D({
     }
     let layers: MapLayers = { basemap: null, radar: null, terrain: null }
     const redrawGround = () => map.setBackground(layers)
+    map.setAssistPaths(
+      (t) => tracker.assistPath(t),
+      (g) => tracker.groundAssistPath(g),
+    )
     redrawGround()
 
     const resize = () => {
@@ -69,7 +73,9 @@ export function AirTraffic3D({
     // The airport itself, laid on the map at true size.
     const layoutRequest = new AbortController()
     fetchAirportLayout(AIRPORT, layoutRequest.signal)
-      .then((layout) => map.setAirport(layout))
+      .then((layout) => {
+        map.setAirport(layout)
+      })
       .catch((err) => {
         if (!layoutRequest.signal.aborted) console.warn('Airport layout unavailable:', err)
       })

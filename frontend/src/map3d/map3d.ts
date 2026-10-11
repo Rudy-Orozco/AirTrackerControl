@@ -16,6 +16,7 @@ import {
   LineSegments,
   Mesh,
   MeshBasicMaterial,
+  Object3D,
   MeshPhongMaterial,
   PerspectiveCamera,
   PlaneGeometry,
@@ -35,10 +36,12 @@ import { modelGeometry } from '../aircraft/aircraftModels'
 import { aircraftSize } from '../aircraft/aircraftShapes'
 import type { Flight } from '../tracking/flights'
 import type { GroundTrack } from '../tracking/groundTracker'
+import type { AssistPath } from '../tracking/runwayAssist'
 import type { AirportLayout } from '../diorama/diorama'
-import { buildAirportModel } from './airportModel'
+import { buildAirportModel, buildMapRunways } from './airportModel'
 import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, type Map3DTrafficStyle } from '../config/config'
 import { bankOf, pitchOf } from '../diorama/diorama'
+import type { Line as MapLine } from '../map/basemap'
 import type { MapLayers } from '../map/mapLayers'
 import { elevationAt, type Terrain } from '../map/terrain'
 import { createProjection, drawFocusBrackets, drawTrackLabels, labelFont, lastOnScreen, renderBackground, type Point } from '../map/renderer'
@@ -94,6 +97,8 @@ interface Craft {
   prediction: Line
   /** Delayed view: from the latest report on to where the plane probably is now. */
   estimate: Line
+  /** The landing or takeoff path it's being guided along (MAP.showAssistPaths). */
+  assist: Line
   /** Points in the trail buffers, how many they can hold, and the trail sample they were built from. */
   count: number
   capacity: number
@@ -122,6 +127,11 @@ export class Map3D {
   private vScale = 1
   /** The airport itself, at true size (see airportModel.ts), once its layout has loaded. */
   private airport: ReturnType<typeof buildAirportModel> | null = null
+  /**
+   * The airport's runways as the map draws them (pale, widened bars), taken out
+   * of the ground picture so they can make way for the airport model up close.
+   */
+  private mapRunways: Mesh | null = null
   /** With terrain on, the ground is flat out to this far from the airport (nm), so the airport lies on it. */
   private flatRadius = 0
   private readonly camera = new PerspectiveCamera(CAMERA_FOV, 1, CAMERA_NEAR, 2000)
@@ -240,6 +250,10 @@ export class Map3D {
   private nearAirport = false
   /** Aircraft on the ground at the airport, drawn while the camera is near it (MAP3D.showGroundTraffic). */
   private readonly groundCrafts = new Map<GroundTrack, Mesh<BufferGeometry, MeshPhongMaterial>>()
+  private assistPaths: ((t: Track) => AssistPath | null) | null = null
+  private groundAssistPaths: ((g: GroundTrack) => AssistPath | null) | null = null
+  /** Takeoff paths of departures still on the ground (MAP.showAssistPaths). */
+  private readonly groundPathLines = new Map<GroundTrack, Line>()
   /** Where each aircraft was drawn on screen last frame, for clicking on one. */
   private hits: { hex: string; x: number; y: number }[] = []
   private readonly crafts = new Map<Track, Craft>()
@@ -307,7 +321,23 @@ export class Map3D {
     // big as on the flat map and stay readable when seen at an angle from afar.
     const half = size / 2
     const view = { cx: half / 2, cy: half / 2, pxPerNm: half / (2 * R) }
-    const canvas = renderBackground(half, half, 2, view, createProjection(view, CENTER), basemap, radar, terrain)
+    // The airport's own runways are drawn separately (see mapRunways); other airports' stay in the picture.
+    const ours = (line: MapLine) => line.every(([lon, lat]) => Math.hypot(local({ lat, lon }).x, local({ lat, lon }).y) < AIRPORT_RUNWAYS_NM)
+    const ground = basemap && { ...basemap, runways: basemap.runways.filter((line) => !ours(line)) }
+    const canvas = renderBackground(half, half, 2, view, createProjection(view, CENTER), ground, radar, terrain)
+    if (this.mapRunways) {
+      this.world.remove(this.mapRunways)
+      disposeTree(this.mapRunways)
+      this.mapRunways = null
+    }
+    if (basemap) {
+      // As wide as the flat map's 2.5 px bars, at the ground picture's scale.
+      this.mapRunways = buildMapRunways(basemap.runways.filter(ours), ([lon, lat]) => {
+        const { x, y } = local({ lat, lon })
+        return new Vector2(x, y)
+      }, MAP_RUNWAY_PX / view.pxPerNm)
+      this.world.add(this.mapRunways)
+    }
     const texture = new CanvasTexture(canvas)
     texture.colorSpace = SRGBColorSpace
     texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy()
@@ -459,6 +489,8 @@ export class Map3D {
     const closeIn = (distance: number) => 1 - smoothstep(Math.min(Math.max((distance - range) / (range * TRUE_SIZE_EASE), 0), 1))
     const closeCamera = MAP3D.trueSizeNearAirport ? closeIn(cameraDistance) : 0
     if (this.airport) this.airport.group.visible = MAP3D.showAirport && nearAirport
+    // The map's simple runways, wherever the airport model isn't.
+    if (this.mapRunways) this.mapRunways.visible = !this.airport?.group.visible
     this.world.updateMatrixWorld()
     // Fog only the far side of the map, however far out the camera is zoomed;
     // fixed distances would darken the whole map when zoomed out.
@@ -478,9 +510,14 @@ export class Map3D {
     const markColors: number[] = []
     const color = new Color()
 
+    // Once landed, an aircraft carries on in the ground traffic (when shown), from where it touched down.
+    const allGround = [...ground]
+    const groundList = MAP3D.showGroundTraffic && nearAirport ? allGround : []
+    const onTheGround = new Set(groundList.filter((g) => g.opacity > 0).map((g) => g.info.hex))
     for (const t of list) {
       const style = MAP3D.traffic[t.info.kind]
       if (t.opacity <= 0 || !style.show) continue
+      if (t.landedAt !== null && onTheGround.has(t.info.hex)) continue
       seen.add(t)
       const craft = this.crafts.get(t) ?? this.addCraft(t)
       const { x, y } = local(t.pos)
@@ -520,6 +557,7 @@ export class Map3D {
         craft.routeEnd = null
       }
       this.updatePrediction(craft, t, x, y, z, color, opacity)
+      this.updateAssistPath(craft, t)
       if (MAP.showPredictions && t.info.kind !== 'other') {
         const path = predictedPath(t)
         path.marks.forEach((m, i) => {
@@ -555,7 +593,8 @@ export class Map3D {
     this.hits = shown.map((t, i) => ({ hex: t.info.hex, ...screen[i] }))
     // Those still flying (not just landed) are drawn by the airborne tracker above.
     const flying = new Set([...seen].filter((t) => t.landedAt === null).map((t) => t.info.hex))
-    const onGround = this.updateGroundTraffic(MAP3D.showGroundTraffic && nearAirport ? ground : [], flying, inside)
+    const onGround = this.updateGroundTraffic(groundList, flying, inside)
+    this.updateGroundAssistPaths(allGround)
     const focusDrawn = !!focus && (flying.has(focus.hex) || onGround.has(focus.hex))
     this.updateFocusMesh(focus, focusAt, focusDrawn, trueScale, inside !== null)
     this.updateFocusRoute(focus, focusLocal)
@@ -625,6 +664,10 @@ export class Map3D {
     if (this.controls.autoRotate) this.saveCamera()
     for (const [t, craft] of this.crafts) this.removeCraft(t, craft)
     for (const mesh of this.groundCrafts.values()) mesh.material.dispose()
+    for (const line of this.groundPathLines.values()) {
+      line.geometry.dispose()
+      ;(line.material as LineDashedMaterial).dispose()
+    }
     this.controls.dispose()
     this.ground.material.map?.dispose()
     this.ground.material.alphaMap?.dispose()
@@ -656,19 +699,23 @@ export class Map3D {
       new BufferGeometry(),
       new LineDashedMaterial({ transparent: true, depthWrite: false, dashSize: 0.1, gapSize: 0.3 }),
     )
-    for (const o of [trail, curtain, route, prediction, estimate]) o.frustumCulled = false
+    const assist = new Line(
+      new BufferGeometry(),
+      new LineDashedMaterial({ transparent: true, depthWrite: false, dashSize: 0.12, gapSize: 0.09 }),
+    )
+    for (const o of [trail, curtain, route, prediction, estimate, assist]) o.frustumCulled = false
     this.scene.add(mesh)
-    this.world.add(trail, curtain, route, prediction, estimate)
-    const craft: Craft = { mesh, material, trail, curtain, route, prediction, estimate, count: 0, capacity: 0, builtAt: -1, routeEnd: null }
+    this.world.add(trail, curtain, route, prediction, estimate, assist)
+    const craft: Craft = { mesh, material, trail, curtain, route, prediction, estimate, assist, count: 0, capacity: 0, builtAt: -1, routeEnd: null }
     this.crafts.set(t, craft)
     return craft
   }
 
   private removeCraft(t: Track, craft: Craft) {
     this.scene.remove(craft.mesh)
-    this.world.remove(craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate)
+    this.world.remove(craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate, craft.assist)
     craft.material.dispose()
-    for (const o of [craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate]) {
+    for (const o of [craft.trail, craft.curtain, craft.route, craft.prediction, craft.estimate, craft.assist]) {
       o.geometry.dispose()
       ;(o.material as LineBasicMaterial).dispose()
     }
@@ -801,6 +848,53 @@ export class Map3D {
     // The curve starts exactly on the aircraft.
     setPathLine(craft.prediction, on ? predictedPath(t) : null, { x, y, z }, color, 0.8 * opacity)
     setPathLine(craft.estimate, on ? estimatedPath(t) : null, null, color, 0.6 * opacity)
+  }
+
+  /**
+   * The landing or takeoff path the aircraft's being guided along near the
+   * runways (MAP.showAssistPaths), dashed, in the board's arrival or departure
+   * color, as bold as the guidance is strong.
+   */
+  private updateAssistPath(craft: Craft, t: Track) {
+    const path = MAP.showAssistPaths && this.assistPaths ? this.assistPaths(t) : null
+    craft.assist.visible = path !== null
+    if (!path) return
+    const color = new Color((path.landing ? MAP3D.traffic.arrival : MAP3D.traffic.departure).color)
+    setPathLine(craft.assist, { points: path.points, alts: path.alts }, null, color, 0.85 * path.strength * t.opacity)
+  }
+
+  /** Where the landing and takeoff paths come from (the tracker's runway assist), for MAP.showAssistPaths. */
+  setAssistPaths(paths: (t: Track) => AssistPath | null, groundPaths: (g: GroundTrack) => AssistPath | null) {
+    this.assistPaths = paths
+    this.groundAssistPaths = groundPaths
+  }
+
+  /** The takeoff paths of departures still on the ground, lined up or rolling (MAP.showAssistPaths). */
+  private updateGroundAssistPaths(ground: GroundTrack[]) {
+    const seen = new Set<GroundTrack>()
+    if (MAP.showAssistPaths && this.groundAssistPaths) {
+      const color = new Color(MAP3D.traffic.departure.color)
+      for (const g of ground) {
+        const path = g.opacity > 0 ? this.groundAssistPaths(g) : null
+        if (!path) continue
+        seen.add(g)
+        let line = this.groundPathLines.get(g)
+        if (!line) {
+          line = new Line(new BufferGeometry(), new LineDashedMaterial({ transparent: true, depthWrite: false, dashSize: 0.12, gapSize: 0.09 }))
+          line.frustumCulled = false
+          this.world.add(line)
+          this.groundPathLines.set(g, line)
+        }
+        setPathLine(line, { points: path.points, alts: path.alts }, null, color, 0.85 * g.opacity)
+      }
+    }
+    for (const [g, line] of this.groundPathLines) {
+      if (seen.has(g)) continue
+      this.world.remove(line)
+      line.geometry.dispose()
+      ;(line.material as LineDashedMaterial).dispose()
+      this.groundPathLines.delete(g)
+    }
   }
 
   private drawRouteLabels(items: { at: Vector3; text: string; color: string; opacity: number }[]) {
@@ -1836,8 +1930,8 @@ function roundDot() {
   return new CanvasTexture(canvas)
 }
 
-/** Frees a group's geometries and materials. */
-function disposeTree(root: Group) {
+/** Frees an object's (and its children's) geometries and materials. */
+function disposeTree(root: Object3D) {
   root.traverse((o) => {
     const { geometry, material } = o as Mesh
     geometry?.dispose()
@@ -1845,6 +1939,11 @@ function disposeTree(root: Group) {
     else material?.dispose()
   })
 }
+
+/** Runways all within this far (nm) of the airport are its own, drawn apart from the ground picture (see mapRunways). */
+const AIRPORT_RUNWAYS_NM = 3
+/** The flat map's runway width, in its pixels. */
+const MAP_RUNWAY_PX = 2.5
 
 /** With terrain on, the ground is level this far (nm) beyond the airport's furthest pavement or building, then eases into the terrain over the next stretch. */
 const FLAT_MARGIN_NM = 0.8

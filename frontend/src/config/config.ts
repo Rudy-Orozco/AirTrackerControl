@@ -208,6 +208,14 @@ export const MOTION = {
   delayed: false,
   /** Delayed view: how many reports an aircraft waits for, and so how many fetches (less one) the map runs behind. */
   delayedReports: 2 as 2 | 3,
+  /**
+   * Near the runways, line arrivals up with the glide path and centerline, and
+   * departures with the climb-out, and play out takeoffs (roll, liftoff, climb)
+   * between sparse reports. Off: drawn as reported.
+   */
+  runwayAssist: true,
+  /** Keep moving ground traffic on the taxiway and runway centerlines. Off: drawn as reported. */
+  taxiwaySnap: true,
   /** How long a newly seen (or just took off) aircraft takes to fade in. */
   fadeInMs: 1000,
   /**
@@ -239,6 +247,12 @@ export const MAP = {
   planeSize: 9,
   /** Debug: draw the path each arrival/departure will fly until the next fetch lands, on both maps. */
   showPredictions: false,
+  /**
+   * The landing and takeoff paths aircraft are being guided along near the
+   * runways (the glide path down to touchdown, the climb-out), in the arrival
+   * and departure colors, 2D and 3D.
+   */
+  showAssistPaths: false,
   /** Show callsign + altitude (hundreds of feet) next to each aircraft. */
   showLabels: true,
   labelSize: 12,

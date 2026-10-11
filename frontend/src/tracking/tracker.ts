@@ -1,6 +1,9 @@
 import type { Aircraft } from '../feed/api'
 import { AIRPORT_PRESET, FEED, MOTION, trailSecondsFor } from '../config/config'
 import { wasLanding, type Flight } from './flights'
+import type { AirportLayout } from '../diorama/diorama'
+import { RunwayAssist } from './runwayAssist'
+import type { GroundTrack } from './groundTracker'
 
 export interface LatLon {
   lat: number
@@ -45,10 +48,21 @@ export interface Track {
   lastSeen: number
   /** Set when the aircraft touches down; it then fades out. */
   landedAt: number | null
-  /** Altitude (feet) glides from `altFrom` to `altTo` over the segment, then carries on at `altRate` (feet per ms). */
+  /**
+   * Altitude (feet) curves from `altFrom`, climbing at `altFromRate`, to `altTo`
+   * over the segment, arriving at `altRate` (feet per ms), then carries on at
+   * that, so the climb rate never jumps at an update.
+   */
   altFrom: number | null
   altTo: number | null
+  altFromRate: number
   altRate: number
+  /** How fast the drawn altitude is changing (feet per ms), where the next segment's curve starts from. */
+  altSpeed: number
+  /** When it lifted off (carried on from the ground view), for the first minute's climb; null otherwise. */
+  liftoffAt: number | null
+  /** Just handed over from the ground view: the rest of its takeoff, played out (see takeoffProfile). */
+  takeoff: TakeoffProfile | null
 
   /** Updated every frame by step(). */
   pos: LatLon
@@ -77,6 +91,8 @@ export interface Track {
  */
 export interface Handoff {
   pos: LatLon
+  /** How it was moving there (degrees per ms), so the other tracker carries on at the same speed. */
+  velocity: LatLon
   heading: number
   /** Feet above the field. */
   heightFt: number
@@ -155,6 +171,8 @@ export class Tracker {
   /** Running average of the time between updates, however long (for how long to keep missing aircraft). */
   private gapMs = FEED.pollMs
   private pending = new Map<string, PendingReports>()
+  /** Lines arrivals and departures up with the runways near the ground, once the airport's layout is known. */
+  private assist: RunwayAssist | null = null
   private delayed = MOTION.delayed
   private reportsNeeded = reportsNeeded()
 
@@ -163,6 +181,9 @@ export class Tracker {
    * it lifts off from there instead of appearing from nowhere.
    */
   ingest(flights: Flight[], now: number, handoff: (hex: string) => Handoff | null = () => null) {
+    // Bring every plane up to now first: each new segment starts from where it's drawn
+    // now, not where it was last frame, or it would stall for a frame at each update.
+    this.step(now)
     // Match the segment length to the gap between fetches (pollMs plus however
     // long the request takes) so planes arrive just as the next update lands.
     // Averaging keeps one slow request from stretching or squashing the next segment.
@@ -209,8 +230,9 @@ export class Tracker {
       // it anyway so it eases off rather than turning back.
       const lead = existing ? leadOf(existing.pos, a) : null
       const target = predict(a, turnRate, Math.max(ageMs + segmentMs, (lead ?? -Infinity) + segmentMs * MIN_AHEAD))
-      // Altitude is extrapolated along the vertical rate the same way.
-      const altRate = (a.verticalRate ?? 0) / 60_000
+      // Altitude is extrapolated along the vertical rate the same way. When it isn't sent,
+      // estimate it from the climb or descent since the last report.
+      const altRate = a.verticalRate !== null ? a.verticalRate / 60_000 : estimatedAltRate(existing, a, reportedAt)
       const altNow = a.altitude === null ? null : a.altitude + altRate * ageMs
       const altTo = altNow === null ? null : altNow + altRate * segmentMs
 
@@ -220,7 +242,7 @@ export class Tracker {
         this.tracks.set(a.hex, {
           info: a,
           from: pos,
-          fromVelocity: target.velocity,
+          fromVelocity: takeoff?.velocity ?? target.velocity,
           to: target.pos,
           velocity: target.velocity,
           segmentStart: now,
@@ -236,8 +258,14 @@ export class Tracker {
           lastSeen: now,
           landedAt: null,
           altFrom: takeoff ? AIRPORT_PRESET.elevationFt + takeoff.heightFt : altNow,
-          altTo,
-          altRate,
+          altTo: takeoff ? climbingAway(altTo, now, now + segmentMs) : altTo,
+          // Lifting off, the climb builds up from level, like a rotation, toward a typical
+          // initial climb if no climb rate is sent (there's no earlier altitude to tell it from).
+          altFromRate: takeoff ? 0 : altRate,
+          altRate: takeoff && a.verticalRate === null ? LIFTOFF_CLIMB_FPM / 60_000 : altRate,
+          altSpeed: takeoff ? 0 : altRate,
+          liftoffAt: takeoff ? now : null,
+          takeoff: takeoff && MOTION.runwayAssist ? takeoffProfile(a, takeoff.pos, now, this.assist?.liftoffPoint(takeoff.pos, takeoff.heading)) : null,
           pos,
           vel: target.velocity,
           heading: takeoff?.heading ?? a.track ?? 0,
@@ -263,8 +291,9 @@ export class Tracker {
       existing.segmentStart = now
       existing.segmentMs = segmentMs
       existing.curveMs = segmentMs
-      existing.altFrom = existing.altitude ?? altNow
-      existing.altTo = altTo
+      existing.altFrom = existing.takeoff?.reportedAlt ?? existing.altitude ?? altNow
+      existing.altFromRate = existing.takeoff ? existing.takeoff.reportedRate : existing.altSpeed
+      existing.altTo = existing.liftoffAt === null ? altTo : climbingAway(altTo, existing.liftoffAt, now + segmentMs)
       existing.altRate = altRate
       existing.lastSeen = now
       // Touchdown reports can flicker; an airborne report means it's still flying.
@@ -300,13 +329,15 @@ export class Tracker {
           const wp = waypointOf(a, reportedAt, 0)
           const altFrom = AIRPORT_PRESET.elevationFt + takeoff.heightFt
           const t = newTrack(a, reportedAt, now, takeoff.pos, wp.velocity, reportedAt - segmentMs, altFrom, takeoff.heading)
+          t.liftoffAt = now
+          if (MOTION.runwayAssist) t.takeoff = takeoffProfile(a, takeoff.pos, now, this.assist?.liftoffPoint(takeoff.pos, takeoff.heading))
           t.firstSeen = now - MOTION.fadeInMs
           // The ground view runs about one fetch behind, but everything else in the air runs
           // a fetch behind for each report it waited for after its first. Ease back to match,
           // and the reports ahead build up to the same number as theirs.
           // (Theirs also includes how old their first report already was, so this does too.)
           t.baseDelayMs = (this.reportsNeeded - 1) * segmentMs + (now - reportedAt)
-          startSegment(t, now, takeoff.pos, wp.velocity, reportedAt - segmentMs, altFrom, [wp])
+          startSegment(t, now, takeoff.pos, takeoff.velocity, reportedAt - segmentMs, altFrom, [wp])
           this.tracks.set(a.hex, t)
           continue
         }
@@ -357,8 +388,28 @@ export class Tracker {
     }
   }
 
+  /** The landing or takeoff path the runway assist is guiding `t` along, if any (for drawing). */
+  assistPath(t: Track) {
+    return this.assist?.path(t) ?? null
+  }
+
+  /**
+   * The takeoff path of an aircraft still on the ground (the ground view's), if
+   * it's lined up on a runway or rolling down one; not for arrivals rolling out.
+   */
+  groundAssistPath(g: GroundTrack) {
+    if (g.info.kind === 'arrival' || !MOTION.runwayAssist) return null
+    return this.assist?.groundPath(g.pos, g.heading) ?? null
+  }
+
+  /** The airport's layout, so approaches and climb-outs can follow its runways (see runwayAssist.ts). */
+  setLayout(layout: AirportLayout) {
+    this.assist = new RunwayAssist(layout)
+  }
+
   /** Advance every track to `now`. Call once per animation frame. */
   step(now: number) {
+    this.assist?.prune((t) => this.tracks.get(t.info.hex) === t)
     for (const [hex, t] of this.tracks) {
       const overdue = overdueFor(now, t.lastSeen, this.lastIngest, this.gapMs, MOTION.staleMs)
       const landedFor = t.landedAt === null ? 0 : now - t.landedAt
@@ -398,9 +449,24 @@ export class Tracker {
         t.pos = next.pos
         t.vel = next.velocity
       }
-      if (t.altTo === null || t.altFrom === null) t.altitude = t.altTo
-      else if (elapsed < t.segmentMs) t.altitude = t.altFrom + (t.altTo - t.altFrom) * (elapsed / t.segmentMs)
-      else t.altitude = t.altTo + t.altRate * (elapsed - t.segmentMs)
+      if (t.altTo === null || t.altFrom === null) {
+        t.altitude = t.altTo
+        t.altSpeed = 0
+      } else if (elapsed < t.segmentMs) {
+        const u = elapsed / t.segmentMs
+        t.altitude = hermite(t.altFrom, t.altFromRate, t.altTo, t.altRate, t.segmentMs, u)
+        t.altSpeed = hermiteSlope(t.altFrom, t.altFromRate, t.altTo, t.altRate, t.segmentMs, u)
+      } else {
+        t.altitude = t.altTo + t.altRate * (elapsed - t.segmentMs)
+        t.altSpeed = t.altRate
+      }
+      // Taking off: rolling until the liftoff point, then climbing away, easing into the reports.
+      // (Part of the runway assist: turned off, it carries on as reported.)
+      if (t.takeoff && !MOTION.runwayAssist) t.takeoff = null
+      if (t.takeoff) playTakeoff(t, now)
+      // Just lifted off, never back down onto the runway (a curve can dip before it climbs).
+      if (t.liftoffAt !== null && t.altitude !== null) t.altitude = Math.max(t.altitude, AIRPORT_PRESET.elevationFt)
+      if (t.liftoffAt !== null && now - t.liftoffAt > LIFTOFF_MS) t.liftoffAt = null
 
       // Point the arrow along the curve; keep the last heading if the speed is unknown.
       t.heading = headingOf(t.vel, t.pos.lat) ?? t.info.track ?? t.heading
@@ -411,12 +477,12 @@ export class Tracker {
       if (dt > 0) {
         const [turnTarget, turnMs] = MOTION.delayed ? [curveTurn, ROLL_SMOOTHING_MS] : [t.turnRate, TURN_SMOOTHING_MS]
         t.turning += (turnTarget - t.turning) * (1 - Math.exp(-dt / turnMs))
-        // The drawn altitude glides in a straight line over each segment, so pitch eases between them.
-        const climbTarget =
-          t.altTo === null || t.altFrom === null ? 0 : elapsed < t.segmentMs ? (t.altTo - t.altFrom) / t.segmentMs : t.altRate
-        t.climbing += (climbTarget - t.climbing) * (1 - Math.exp(-dt / PITCH_SMOOTHING_MS))
+        // Pitch follows the drawn climb, eased.
+        t.climbing += (t.altSpeed - t.climbing) * (1 - Math.exp(-dt / PITCH_SMOOTHING_MS))
       }
       t.lastStep = now
+      // Near the runways, onto the approach or climb-out it's flying (before the trail records it).
+      this.assist?.apply(t, Math.max(dt, 0), MOTION.runwayAssist)
 
       const fadeIn = Math.min((now - t.firstSeen) / MOTION.fadeInMs, 1)
       const fadeOut = 1 - clamp(overdue / MOTION.fadeOutMs, 0, 1)
@@ -440,7 +506,7 @@ export class Tracker {
     const t = this.tracks.get(hex)
     if (!t) return null
     const heightFt = t.altitude === null ? 0 : Math.max(t.altitude - AIRPORT_PRESET.elevationFt, 0)
-    return { pos: t.pos, heading: t.heading, heightFt }
+    return { pos: t.pos, velocity: t.vel, heading: t.heading, heightFt }
   }
 }
 
@@ -665,9 +731,180 @@ function startSegment(t: Track, now: number, from: LatLon, fromVelocity: LatLon,
   const behindMs = now - fromAt - t.baseDelayMs
   t.segmentMs = curveMs / (1 + clamp(behindMs / curveMs, -MAX_CATCH_UP, MAX_CATCH_UP))
   t.altFrom = fromAlt ?? wp.alt
-  t.altTo = wp.alt === null ? null : wp.alt + wp.altRate * offsetMs
+  t.altFromRate = t.takeoff ? t.takeoff.reportedRate : t.altSpeed
+  const altTo = wp.alt === null ? null : wp.alt + wp.altRate * offsetMs
+  t.altTo = t.liftoffAt === null ? altTo : climbingAway(altTo, t.liftoffAt, now + t.segmentMs)
   t.altRate = wp.altRate
 }
+
+/**
+ * The rest of a takeoff, from the moment the ground view hands an aircraft over
+ * (at its first airborne report): it keeps rolling down the runway to its
+ * liftoff point, two-thirds of the way down (whatever height the reports
+ * already give), then climbs away in a straight line aimed at where the reports
+ * put it next, at that height, so it's as high as each report says by the time
+ * it gets there: steeper if they're high, shallower if they're low. Each new
+ * report re-aims it from where it's drawn. Once it's up and away it eases into
+ * its reported altitudes. Off a runway the layout doesn't show, the liftoff
+ * point is worked back from the first report along its track at its climb gradient.
+ */
+export interface TakeoffProfile {
+  /** Where it leaves the runway, and the direction it rolls and climbs (unit, meters east and north). */
+  liftoff: LatLon
+  east: number
+  north: number
+  /**
+   * Climbing: the straight line it's following, from `aimFrom` (where it was
+   * drawn, and how high) at `gradient` feet per meter flown, aimed at the
+   * report's point for segment `aimedAt` (its start time); re-aimed at each new one.
+   */
+  aimFrom: { pos: LatLon; alt: number } | null
+  gradient: number
+  aimedAt: number | null
+  /** The height it was drawn at last frame (feet), where a re-aim starts from. */
+  drawnAlt: number
+  /** When it started easing into its reported altitudes (null until it's up and away). */
+  easeFrom: number | null
+  /** When the handover happened, and when it left the runway (null while still rolling). */
+  start: number
+  liftedAt: number | null
+  /**
+   * The altitude (feet) and climb rate (feet per ms) the reports put it at,
+   * before blending with the takeoff: each update's curve carries on from these,
+   * so an update can't disturb the blend.
+   */
+  reportedAlt: number | null
+  reportedRate: number
+}
+
+function takeoffProfile(a: Aircraft, from: LatLon, now: number, runwayLiftoff: LatLon | null = null): TakeoffProfile {
+  const rad = ((a.track ?? 0) * Math.PI) / 180
+  const [east, north] = [Math.sin(rad), Math.cos(rad)]
+  // Climb gradient from the reported climb and speed; else a typical airliner's.
+  const fps = (a.groundSpeed ?? 0) * 1.68781
+  const ftPerFt = a.verticalRate !== null && a.verticalRate > 200 && fps > 50 ? a.verticalRate / 60 / fps : TYPICAL_CLIMB_GRADIENT
+  const height = a.altitude === null ? 0 : Math.max(a.altitude - AIRPORT_PRESET.elevationFt, 0)
+  // Back along its track from where it was reported, to where it was at the runway.
+  const backM = (height / ftPerFt) * M_PER_FT
+  let liftoff = runwayLiftoff ?? offset({ lat: a.lat, lon: a.lon }, east * -backM, north * -backM)
+  // Already drawn past that (it was running behind): lift off now.
+  if (alongMeters(from, liftoff, east, north) < 0) liftoff = from
+  return {
+    liftoff,
+    east,
+    north,
+    aimFrom: null,
+    gradient: 0,
+    aimedAt: null,
+    drawnAlt: AIRPORT_PRESET.elevationFt,
+    easeFrom: null,
+    start: now,
+    liftedAt: null,
+    reportedAlt: null,
+    reportedRate: 0,
+  }
+}
+
+/**
+ * Holds a taking-off aircraft on the runway until its liftoff point, then
+ * climbs it straight at where the reports put it next (re-aiming at each new
+ * one), then eases it into its reported altitudes.
+ */
+function playTakeoff(t: Track, now: number) {
+  const p = t.takeoff!
+  const field = AIRPORT_PRESET.elevationFt
+  const reported = t.altitude
+  const reportedRate = t.altSpeed
+  p.reportedAlt = reported
+  p.reportedRate = reportedRate
+  if (p.liftedAt === null) {
+    if (alongMeters(p.liftoff, t.pos, p.east, p.north) < 0 && now - p.start < MAX_ROLL_MS) {
+      // Still rolling: on the runway, level.
+      t.altitude = field
+      t.altSpeed = 0
+      p.drawnAlt = field
+      return
+    }
+    p.liftedAt = now
+    // The first minute's climb (see climbingAway) counts from here, where it really left the runway.
+    t.liftoffAt = now
+  }
+  // Aim (again, at each new report) straight from where it's drawn to where the reports put it next.
+  if (p.aimedAt !== t.segmentStart || !p.aimFrom) {
+    p.aimedAt = t.segmentStart
+    p.aimFrom = { pos: t.pos, alt: p.drawnAlt }
+    const distance = Math.max(alongMeters(t.pos, t.to, p.east, p.north), MIN_AIM_M)
+    const targetAlt = t.altTo ?? reported ?? p.drawnAlt
+    p.gradient = clamp((targetAlt - p.drawnAlt) / distance, 0, MAX_CLIMB_FT_PER_M)
+  }
+  const flown = Math.max(alongMeters(p.aimFrom.pos, t.pos, p.east, p.north), 0)
+  const profile = p.aimFrom.alt + flown * p.gradient
+  // Climbing as fast as it's drawn moving along, at that angle.
+  const speed = t.vel.lon * M_PER_DEG * Math.cos((t.pos.lat * Math.PI) / 180) * p.east + t.vel.lat * M_PER_DEG * p.north
+  const profileRate = Math.max(speed, 0) * p.gradient
+  // Up and away: ease into the reports (by now it's been meeting them, so it's a small step).
+  if (p.easeFrom === null && (profile - field > HANDOVER_FT || now - p.liftedAt > HOLD_MS)) p.easeFrom = now
+  const w = p.easeFrom === null ? 0 : smooth(Math.min((now - p.easeFrom) / TAKEOFF_BLEND_MS, 1))
+  t.altitude = reported === null ? profile : profile + (reported - profile) * w
+  t.altSpeed = profileRate + (reportedRate - profileRate) * w
+  p.drawnAlt = t.altitude
+  if (w >= 1) t.takeoff = null
+}
+
+/** Meters from `a` to `b` along the direction (`east`, `north`). */
+function alongMeters(a: LatLon, b: LatLon, east: number, north: number) {
+  return (b.lon - a.lon) * M_PER_DEG * Math.cos((a.lat * Math.PI) / 180) * east + (b.lat - a.lat) * M_PER_DEG * north
+}
+
+function offset(p: LatLon, eastM: number, northM: number): LatLon {
+  return { lat: p.lat + northM / M_PER_DEG, lon: p.lon + eastM / (M_PER_DEG * Math.cos((p.lat * Math.PI) / 180)) }
+}
+
+function smooth(x: number) {
+  return x * x * (3 - 2 * x)
+}
+
+const M_PER_DEG = 111_320
+const M_PER_FT = 0.3048
+/** About 7°: a typical airliner's initial climb, when no climb rate is sent. */
+const TYPICAL_CLIMB_GRADIENT = 0.12
+/** Climbing straight at the next report: never steeper than about 20°, and aimed no closer than this (meters). */
+const MAX_CLIMB_FT_PER_M = Math.tan((20 * Math.PI) / 180) / M_PER_FT
+const MIN_AIM_M = 300
+/** Up and away (this high above the field, or this long after liftoff), it eases into its reports over this long (ms). */
+const HANDOVER_FT = 1000
+const HOLD_MS = 40_000
+const TAKEOFF_BLEND_MS = 6000
+/** Lifts off by this long (ms) after the handover even if it hasn't reached its liftoff point (a poor estimate). */
+const MAX_ROLL_MS = 25_000
+
+/** Feet per ms from the altitude change between `t`'s last report and `a`, or 0 if that's unknown. */
+function estimatedAltRate(t: Track | undefined, a: Aircraft, reportedAt: number) {
+  if (!t || t.info.altitude === null || a.altitude === null || reportedAt - t.reportedAt < MIN_RATE_GAP_MS) return 0
+  return (a.altitude - t.info.altitude) / (reportedAt - t.reportedAt)
+}
+
+/** Reports closer together than this (ms) are too close to tell a climb rate from. */
+const MIN_RATE_GAP_MS = 2000
+
+/**
+ * Just lifted off, an altitude target no lower than a steady climb away from
+ * the runway would be by `at` (from liftoff at `liftoffAt`), for the first
+ * minute or so: reported altitudes near the ground can read at or below the
+ * runway (pressure altitude, a stale altimeter setting), which would leave it
+ * sitting on the ground until the next update.
+ */
+function climbingAway(altTo: number | null, liftoffAt: number, at: number) {
+  if (altTo === null) return null
+  const climbed = Math.min(((at - liftoffAt) * LIFTOFF_CLIMB_FPM) / 60_000, LIFTOFF_CLIMB_MAX_FT)
+  return Math.max(altTo, AIRPORT_PRESET.elevationFt + climbed)
+}
+
+/** The climb assumed after liftoff when reports say less, and how high it's kept to. */
+const LIFTOFF_CLIMB_FPM = 1500
+/** How long after liftoff (ms) that's looked after. */
+const LIFTOFF_MS = 60_000
+const LIFTOFF_CLIMB_MAX_FT = 1000
 
 /**
  * How long (ms) the delayed view takes to fly from `from` (at flight time
@@ -705,7 +942,11 @@ function newTrack(info: Flight, reportedAt: number, now: number, pos: LatLon, ve
     landedAt: null,
     altFrom: alt,
     altTo: alt,
+    altFromRate: 0,
     altRate: 0,
+    altSpeed: 0,
+    liftoffAt: null,
+    takeoff: null,
     pos,
     vel,
     heading,
@@ -732,7 +973,7 @@ function headingOf(v: LatLon, lat: number): number | null {
  * Cubic Hermite interpolation from p0 (moving at v0) to p1 (moving at v1) over
  * `duration` ms, evaluated at fraction u in [0, 1].
  */
-function hermite(p0: number, v0: number, p1: number, v1: number, duration: number, u: number) {
+export function hermite(p0: number, v0: number, p1: number, v1: number, duration: number, u: number) {
   const u2 = u * u
   const u3 = u2 * u
   return (
@@ -741,7 +982,7 @@ function hermite(p0: number, v0: number, p1: number, v1: number, duration: numbe
 }
 
 /** Rate of change of hermite() per millisecond, i.e. the velocity along the curve. */
-function hermiteSlope(p0: number, v0: number, p1: number, v1: number, duration: number, u: number) {
+export function hermiteSlope(p0: number, v0: number, p1: number, v1: number, duration: number, u: number) {
   const u2 = u * u
   return (
     ((6 * u2 - 6 * u) * p0 + (3 * u2 - 4 * u + 1) * duration * v0 + (-6 * u2 + 6 * u) * p1 + (3 * u2 - 2 * u) * duration * v1) /

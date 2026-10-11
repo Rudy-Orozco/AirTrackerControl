@@ -454,6 +454,29 @@ function label(t: Track) {
 }
 
 
+/**
+ * The landing and takeoff paths aircraft are being guided along near the
+ * runways (see runwayAssist.ts): dashed, in the arrival color for landings and
+ * the departure color for takeoffs, as bold as the guidance is strong.
+ */
+export function drawAssistPaths(ctx: CanvasRenderingContext2D, paths: { landing: boolean; points: LatLon[]; strength: number; opacity: number }[], project: Projection) {
+  ctx.save()
+  ctx.lineWidth = 1.5
+  ctx.setLineDash([5, 4])
+  for (const { landing, points, strength, opacity } of paths) {
+    ctx.strokeStyle = landing ? MAP.traffic.arrival.color : MAP.traffic.departure.color
+    ctx.globalAlpha = 0.8 * strength * opacity
+    ctx.beginPath()
+    points.forEach((p, i) => {
+      const q = project(p)
+      if (i === 0) ctx.moveTo(q.x, q.y)
+      else ctx.lineTo(q.x, q.y)
+    })
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
 /** Corner brackets around the followed aircraft (see selection.ts), on the flat map and over the 3D one. */
 export function drawFocusBrackets(ctx: CanvasRenderingContext2D, x: number, y: number) {
   const r = FOCUS_BRACKET_PX

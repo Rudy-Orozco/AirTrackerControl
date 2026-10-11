@@ -134,6 +134,8 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
           finish(booted)
         }
         // Each hands aircraft over to the other at takeoff and touchdown, so they carry on from where they were drawn.
+        // Lifting off carries on from where the ground view draws it now (not last frame).
+        ground.step(now)
         tracker.ingest(flights, now, (hex) => ground.handoff(hex))
         ground.ingest(flights, now, (hex) => tracker.handoff(hex))
         const count = flights.filter((f) => !f.onGround).length

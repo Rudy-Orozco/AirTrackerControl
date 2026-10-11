@@ -1,0 +1,35 @@
+/* A few quiet lines under the airport logo, above the selected aircraft's details (see .corner-stack). */
+.airport-stats {
+  padding: 0 4px;
+  color: var(--text-dim);
+  font: 500 11px / 1.6 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.8;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
+  /* Nothing to click: the map underneath still takes it. */
+  pointer-events: none;
+}
+
+.airport-stats p {
+  margin: 0;
+}
+
+.airport-stats b {
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.airport-stats .is-arrival {
+  color: var(--arrival);
+}
+
+.airport-stats .is-departure {
+  color: var(--departure);
+}
+
+/* Go-arounds and rejected takeoffs, when there have been any. */
+.airport-stats .is-notable {
+  color: #ffcf4d;
+}

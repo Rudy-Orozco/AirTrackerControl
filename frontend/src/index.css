@@ -53,7 +53,25 @@ body,
 /* Landscape windows: the board floats over the right side instead. */
 @media (min-aspect-ratio: 1/1) {
   .app {
-    /* Sized so weather, ATIS and both boards fit the height, even on a 768px-tall laptop. */
-    --board-max-font: 1.8vh;
+    /* Sized so weather, ATIS and both boards (or, with the minimap in the board, the board and the
+       minimap) fit the height at 100% zoom, from a 768px-tall laptop to a 1080p screen. */
+    --board-max-font: 1.45vh;
   }
+}
+
+/* Under the airport logo: its stats, then the selected aircraft's details. Clicks
+   pass between them to the map. */
+.corner-stack {
+  position: absolute;
+  top: 96px;
+  left: 16px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.corner-stack > .aircraft-panel {
+  pointer-events: auto;
 }

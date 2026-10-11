@@ -9,6 +9,8 @@ import { useTick } from '../lib/useTick'
 import { selectAircraft, useSelectedAircraft } from '../tracking/selection'
 import type { FeedStatus } from '../feed/useAircraftFeed'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
+import { BOARD_SLOT_CLASS } from '../map3d/Minimap'
+import { minimapInBoard } from '../map3d/tower'
 import './Board.css'
 
 type BoardKind = 'arrivals' | 'departures'
@@ -27,43 +29,80 @@ function columns() {
 /**
  * Split-flap arrivals and departures boards, side by side, each paging through
  * its flights. `ref` lets the map keep its center clear of the board.
+ *
+ * With the minimap in the board (its layout, or tower view), one board
+ * alternates between arrivals and departures beside it (below it on a
+ * landscape screen).
  */
 export function Board({ board, status, ref }: { board: BoardState; status: FeedStatus; ref?: Ref<HTMLElement> }) {
   const tick = useTick(() => BOARD.pageMs)
+  const tower = minimapInBoard()
+
+  const main = (
+    <>
+      <ErrorBoundary name="ATIS">
+        <AtisStrip />
+      </ErrorBoundary>
+      <header className="board-top">
+        <span className="board-airport">
+          <b>{AIRPORT}</b>
+          <small>
+            {AIRPORT_PRESET.icao} / {AIRPORT_PRESET.name}
+          </small>
+        </span>
+        <Clock />
+      </header>
+
+      {tower ? (
+        <AlternatingPanel board={board} tick={tick} />
+      ) : (
+        <div className="board-panels">
+          <Panel kind="arrivals" rows={board.arrivals} event={board.landing} page={tick % pageCount(board.arrivals)} />
+          <Panel kind="departures" rows={board.departures} event={board.takeoff} page={tick % pageCount(board.departures)} />
+        </div>
+      )}
+
+      <footer className="board-footer">
+        <span className={`board-status${status.error ? ' is-error' : ''}`}>
+          <PollTimer nextPoll={status.nextPoll} fetching={status.fetching} />
+          {statusText(status)}
+        </span>
+        <span>{status.source} / adsb.im</span>
+      </footer>
+    </>
+  )
 
   return (
-    <section className="board" ref={ref}>
+    <section className={`board${tower ? ' is-tower' : ''}`} ref={ref}>
       <div className="board-inner" style={boardStyle()}>
         <ErrorBoundary name="Weather (METAR)">
           <MetarStrip />
         </ErrorBoundary>
-        <ErrorBoundary name="ATIS">
-          <AtisStrip />
-        </ErrorBoundary>
-        <header className="board-top">
-          <span className="board-airport">
-            <b>{AIRPORT}</b>
-            <small>
-              {AIRPORT_PRESET.icao} / {AIRPORT_PRESET.name}
-            </small>
-          </span>
-          <Clock />
-        </header>
-
-        <div className="board-panels">
-          <Panel kind="arrivals" rows={board.arrivals} event={board.landing} tick={tick} />
-          <Panel kind="departures" rows={board.departures} event={board.takeoff} tick={tick} />
-        </div>
-
-        <footer className="board-footer">
-          <span className={`board-status${status.error ? ' is-error' : ''}`}>
-            <PollTimer nextPoll={status.nextPoll} fetching={status.fetching} />
-            {statusText(status)}
-          </span>
-          <span>{status.source} / adsb.im</span>
-        </footer>
+        {tower ? (
+          <div className="board-tower">
+            <div className="board-main">{main}</div>
+            <div className={BOARD_SLOT_CLASS} />
+          </div>
+        ) : (
+          main
+        )}
       </div>
     </section>
+  )
+}
+
+function pageCount(rows: BoardRow[]) {
+  return Math.max(1, Math.ceil(rows.length / BOARD.rowsPerPage))
+}
+
+/** One board that pages through the arrivals, then the departures, and round again. */
+function AlternatingPanel({ board, tick }: { board: BoardState; tick: number }) {
+  const arrivalPages = pageCount(board.arrivals)
+  const step = tick % (arrivalPages + pageCount(board.departures))
+  return step < arrivalPages ? (
+    <Panel kind="arrivals" rows={board.arrivals} event={board.landing} page={step} />
+  ) : (
+    <Panel kind="departures" rows={board.departures} event={board.takeoff} page={step - arrivalPages} />
   )
 }
 
@@ -74,16 +113,15 @@ function Panel({
   kind,
   rows,
   event,
-  tick,
+  page,
 }: {
   kind: BoardKind
   rows: BoardRow[]
   event: BoardEvent | null
-  tick: number
+  page: number
 }) {
   const perPage = BOARD.rowsPerPage
-  const pages = Math.max(1, Math.ceil(rows.length / perPage))
-  const page = tick % pages
+  const pages = pageCount(rows)
   const visible = rows.slice(page * perPage, (page + 1) * perPage)
   const isArrivals = kind === 'arrivals'
   const shownEvent = useUntilExpired(event)

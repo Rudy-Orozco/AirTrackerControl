@@ -30,19 +30,46 @@ const INFER = {
 }
 
 /**
+ * Where a flight's route (arrival or departure here) disagrees with what it's
+ * plainly doing near the airport, it's this low and close...
+ */
+const CHECK = {
+  maxAltitudeFt: 15_000,
+  withinNm: 40,
+  /** ...descending toward the airport (within this many degrees) or climbing away from it... */
+  towardDeg: 60,
+  awayDeg: 90,
+  minVerticalRate: 300,
+  /** ...for this many updates in a row. */
+  updates: 2,
+}
+
+/**
  * Classifies each flight as an arrival, departure, or other traffic, mainly from
  * its published route. Remembers flights classified by the fallback so they keep
  * their color after leaving the area near the airport.
+ *
+ * Route databases get the direction wrong now and then (a reused flight number,
+ * or the legs of a round trip swapped), so a routed flight's motion near the
+ * airport has the last word: the first clear verdict (descending in, or climbing
+ * out) settles which it is for the rest of the leg, keeping the other end of its
+ * trip. A go-around has already been seen coming in, so it stays an arrival.
  */
 export class FlightClassifier {
   private inferred = new Map<string, FlightKind>()
+  /** Per flight (hex and callsign): what its motion settled it as, and the verdict so far and how many updates running. */
+  private settled = new Map<string, 'arrival' | 'departure'>()
+  private verdicts = new Map<string, { kind: 'arrival' | 'departure'; count: number }>()
+  /** Flights seen on the ground: lifting off again starts a new leg. */
+  private onGround = new Set<string>()
 
   classify(aircraft: Aircraft[], routes: Map<string, Route>): Flight[] {
     const flights = aircraft.map((a) => {
       const flight = classifyByRoute(a, routes.get(a.callsign))
+      if (routes.has(a.callsign)) return this.check(flight)
       // Only airline flights with no usable route; a valid route to another
       // airport (e.g. Love Field next to DFW) is trusted as is.
-      if (routes.has(a.callsign) || !isAirlineCallsign(a.callsign) || a.onGround) return flight
+      if (!isAirlineCallsign(a.callsign) || a.onGround) return flight
       const kind = this.inferred.get(a.hex) ?? inferFromMotion(flight)
       if (kind !== 'other') this.inferred.set(a.hex, kind)
       flight.kind = kind
@@ -52,8 +79,49 @@ export class FlightClassifier {
     // Forget aircraft that have left the feed.
     const present = new Set(aircraft.map((a) => a.hex))
     for (const hex of this.inferred.keys()) if (!present.has(hex)) this.inferred.delete(hex)
+    const flying = new Set(aircraft.map(legKey))
+    for (const map of [this.settled, this.verdicts]) for (const key of map.keys()) if (!flying.has(key)) map.delete(key)
+    for (const key of this.onGround) if (!flying.has(key)) this.onGround.delete(key)
     return flights
   }
+
+  /** A routed arrival or departure, turned the other way if its motion has settled it so. */
+  private check(flight: Flight): Flight {
+    if (flight.kind === 'other') return flight
+    const key = legKey(flight)
+    if (flight.onGround) this.onGround.add(key)
+    else if (this.onGround.delete(key)) {
+      // Took off again: a new leg, to be judged afresh.
+      this.settled.delete(key)
+      this.verdicts.delete(key)
+    }
+    if (!this.settled.has(key) && !flight.onGround) {
+      const verdict = motionVerdict(flight)
+      const last = this.verdicts.get(key)
+      const count = verdict && last?.kind === verdict ? last.count + 1 : 1
+      if (verdict) this.verdicts.set(key, { kind: verdict, count })
+      else this.verdicts.delete(key)
+      if (verdict && count >= CHECK.updates) this.settled.set(key, verdict)
+    }
+    const kind = this.settled.get(key)
+    if (kind && kind !== flight.kind) flight.kind = kind
+    return flight
+  }
+}
+
+/** One flight leg of one aircraft. */
+function legKey(a: Aircraft) {
+  return `${a.hex}:${a.callsign}`
+}
+
+/** What a flight near the airport is plainly doing: coming in to land, or climbing out; null if it's not clear. */
+function motionVerdict(f: Flight): 'arrival' | 'departure' | null {
+  if (f.altitude === null || f.altitude > CHECK.maxAltitudeFt || f.distanceNm > CHECK.withinNm || f.verticalRate === null) return null
+  const angle = angleToAirport(f)
+  if (angle === null) return null
+  if (f.verticalRate <= -CHECK.minVerticalRate && angle < CHECK.towardDeg) return 'arrival'
+  if (f.verticalRate >= CHECK.minVerticalRate && angle > CHECK.awayDeg) return 'departure'
+  return null
 }
 
 function inferFromMotion(f: Flight): FlightKind {

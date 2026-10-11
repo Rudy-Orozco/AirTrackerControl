@@ -1,0 +1,203 @@
+/* Left, just above the middle of the screen (clear of the stats and aircraft details
+   under the logo, and of the board), until it's first moved (dragging sets its place inline). */
+.minimap {
+  position: absolute;
+  bottom: 50vh;
+  left: 16px;
+  width: 30vw;
+  aspect-ratio: 1;
+  /* Above the board, so it can be dragged over the gradient at the bottom. */
+  z-index: 1;
+  touch-action: none;
+  user-select: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.5);
+}
+
+.minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: move;
+}
+
+/* Corner handles to resize it and the lock button, shown while hovering. */
+.minimap-resize,
+.minimap-lock {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.minimap:hover .minimap-resize,
+.minimap:hover .minimap-lock,
+.minimap.is-touched .minimap-resize,
+.minimap.is-touched .minimap-lock,
+.minimap.is-pointer-over .minimap-lock,
+.minimap-lock:focus-visible {
+  opacity: 1;
+}
+
+/* L-shaped corner handles, with a bigger area to grab than they show. */
+.minimap-resize {
+  width: 22px;
+  height: 22px;
+}
+
+.minimap-resize::before {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 0 solid var(--text-dim);
+}
+
+.minimap-resize:hover::before {
+  border-color: var(--text);
+}
+
+.minimap-resize.is-nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.minimap-resize.is-nw::before {
+  top: 3px;
+  left: 3px;
+  border-width: 2px 0 0 2px;
+}
+
+.minimap-resize.is-ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.minimap-resize.is-ne::before {
+  top: 3px;
+  right: 3px;
+  border-width: 2px 2px 0 0;
+}
+
+.minimap-resize.is-sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.minimap-resize.is-sw::before {
+  bottom: 3px;
+  left: 3px;
+  border-width: 0 0 2px 2px;
+}
+
+.minimap-resize.is-se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+
+.minimap-resize.is-se::before {
+  bottom: 3px;
+  right: 3px;
+  border-width: 0 2px 2px 0;
+}
+
+/* The lock near the top-right corner, moved by script to stay on screen when that
+   corner is past the window's edge. */
+.minimap-buttons {
+  position: absolute;
+  top: 26px;
+  right: 6px;
+}
+
+.minimap-lock {
+  position: static;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgb(3 5 10 / 0.6);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.minimap-lock svg {
+  width: 13px;
+  height: 13px;
+}
+
+.minimap-lock:hover {
+  color: var(--text);
+}
+
+/* Landscape: the board covers the right, and the map is wider than tall. Bottom-left,
+   leaving the top-left under the logo to the selected aircraft's details. */
+@media (min-aspect-ratio: 1/1) {
+  .minimap {
+    top: auto;
+    bottom: 16px;
+    width: min(18vw, 34vh);
+  }
+}
+
+/* Locked: it can't be moved or resized, and the handles stay hidden; its lock
+   still answers, so it can be found by hovering and clicked to unlock. */
+.minimap.is-locked {
+  pointer-events: none;
+}
+
+.minimap.is-locked .minimap-resize {
+  display: none;
+}
+
+/* ...except on aircraft: the map still answers clicks, to follow one. */
+.minimap.is-locked canvas {
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* Over an aircraft: a click follows it. */
+.minimap canvas.is-over-aircraft {
+  cursor: pointer;
+}
+
+.minimap.is-locked .minimap-lock {
+  pointer-events: auto;
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
+/* Touchscreens: bigger handles and button for fingers. */
+@media (pointer: coarse) {
+  .minimap-resize {
+    width: 36px;
+    height: 36px;
+  }
+
+  .minimap-buttons {
+    top: 36px;
+  }
+
+  .minimap-lock {
+    width: 36px;
+    height: 36px;
+  }
+
+  .minimap.is-locked .minimap-lock {
+    opacity: 0.5;
+  }
+}
+
+/* Docked in the board's corner: flush with the screen's edges, so only the inner corner is rounded. */
+.minimap.is-docked {
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 6px 0 0 0;
+}

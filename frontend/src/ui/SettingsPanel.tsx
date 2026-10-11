@@ -3,7 +3,8 @@ import { DIORAMA, MAP, MAP3D } from '../config/config'
 import { desktop } from '../lib/desktop'
 import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
 import { cancelPicking, clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
-import { toggleStreetView, useStreetView } from '../map3d/streetView'
+import { leaveStreetView, toggleStreetView, useStreetView } from '../map3d/streetView'
+import { minimapShown, TOWER_SPOT } from '../map3d/tower'
 import type { FlightKind } from '../tracking/flights'
 import {
   getSetting,
@@ -12,10 +13,12 @@ import {
   needsReload,
   ORBIT_SETTING,
   resetDioramaPlacement,
+  resetMinimapPlacement,
   resetSettings,
   setSetting,
   SETTING_TABS,
   TERRAIN_SETTING,
+  TOWER_SETTING,
   VIEW_SETTING,
   useSettingsVersion,
   type Setting,
@@ -66,6 +69,8 @@ export function SettingsPanel() {
   const is3d = MAP.view === '3d'
   const terrain = MAP.terrain
   const orbit = MAP3D.orbit
+  const tower = is3d && MAP3D.tower && TOWER_SPOT !== null
+  const minimap = minimapShown()
   const { anchor, picking } = useOrbitAnchor()
   const street = useStreetView()
   const toolbar = useToolbarReveal(open || picking !== false || street.state !== 'off')
@@ -73,7 +78,8 @@ export function SettingsPanel() {
     <>
       <div className={`toolbar${toolbar.shown ? ' is-shown' : ''}`} onPointerDownCapture={toolbar.onPointerDown}>
       {desktop && <ZoomControl />}
-      {is3d && orbit && (
+      {/* No orbit point to place while standing still: the view turns in place. */}
+      {is3d && orbit && !tower && street.state === 'off' && (
         <button
           type="button"
           className={`toolbar-button axis-button${picking ? ' is-on is-picking' : ''}`}
@@ -93,6 +99,23 @@ export function SettingsPanel() {
           <AxisIcon />
         </button>
       )}
+      {/* Tower view: the camera in the control tower cab, with the minimap docked in the board. */}
+      {is3d && TOWER_SPOT && (
+        <button
+          type="button"
+          className={`toolbar-button tower-button${tower ? ' is-on' : ''}`}
+          aria-label={tower ? 'Leave tower view' : 'Tower view'}
+          aria-pressed={tower}
+          title={tower ? 'Leave tower view (Esc)' : "Tower view: look out over the airport from its control tower, with the minimap in the board"}
+          onClick={() => {
+            cancelPicking()
+            leaveStreetView()
+            setSetting(TOWER_SETTING, !tower)
+          }}
+        >
+          <TowerIcon />
+        </button>
+      )}
       {/* Street view: offered while the camera is near the airport. */}
       {is3d && (street.available || street.state !== 'off') && (
         <button
@@ -109,6 +132,8 @@ export function SettingsPanel() {
           }
           onClick={() => {
             cancelPicking()
+            // Down from the tower to pick a spot in the street.
+            if (tower) setSetting(TOWER_SETTING, false)
             toggleStreetView()
           }}
         >
@@ -121,7 +146,7 @@ export function SettingsPanel() {
           className={`toolbar-button orbit-button${orbit ? ' is-on' : ''}`}
           aria-label={orbit ? 'Stop orbiting' : 'Orbit'}
           aria-pressed={orbit}
-          title={orbit ? 'Stop orbiting' : 'Orbit around the point the camera looks at (direction and speed in Settings › 3D Map)'}
+          title={orbit ? 'Stop orbiting' : tower || street.state !== 'off' ? 'Turn the view around slowly (direction and speed in Settings › 3D Map)' : 'Orbit around the point the camera looks at (direction and speed in Settings › 3D Map)'}
           onClick={() => {
             // The orbit point goes with the orbit (the camera stays put, free to pan again).
             if (orbit) clearAnchor()
@@ -131,13 +156,22 @@ export function SettingsPanel() {
           <OrbitIcon />
         </button>
       )}
-      {DIORAMA.enabled && (
+      {(DIORAMA.enabled || minimap) && (
         <button
           type="button"
           className="toolbar-button place-button"
-          aria-label="Bring back the airport view"
-          title="Bring the 3D airport view back to its corner (keeps its angle)"
-          onClick={() => resetDioramaPlacement({ keepAngle: true })}
+          aria-label={DIORAMA.enabled ? 'Bring back the airport view' : 'Bring back the minimap'}
+          title={
+            DIORAMA.enabled && minimap
+              ? 'Bring the 3D airport view (keeping its angle) and the minimap back to their corners'
+              : DIORAMA.enabled
+                ? 'Bring the 3D airport view back to its corner (keeps its angle)'
+                : 'Bring the minimap back to its corner'
+          }
+          onClick={() => {
+            if (DIORAMA.enabled) resetDioramaPlacement({ keepAngle: true })
+            if (minimap) resetMinimapPlacement()
+          }}
         >
           <PlaceIcon />
         </button>
@@ -594,6 +628,16 @@ function AxisIcon() {
       <path d="M12 3v15" strokeDasharray="2.5 2.5" />
       <ellipse cx="12" cy="18" rx="7" ry="2.5" />
       <circle cx="12" cy="18" r="1" fill="currentColor" />
+    </svg>
+  )
+}
+
+/** A control tower: a cab with slanted windows on a tall shaft. */
+function TowerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2v2M7 4h10l-1.5 5h-7z" />
+      <path d="M8.5 9h7M10 9l-.5 11M14 9l.5 11M7 20h10" />
     </svg>
   )
 }

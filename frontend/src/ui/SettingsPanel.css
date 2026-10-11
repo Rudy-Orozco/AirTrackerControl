@@ -139,7 +139,8 @@
   z-index: 3;
   display: flex;
   flex-direction: column;
-  width: min(360px, calc(100vw - 24px));
+  /* Wide enough for every tab in one row. */
+  width: min(480px, calc(100vw - 24px));
   max-height: calc(100vh - 68px);
   box-sizing: border-box;
   border: 1px solid var(--line);
@@ -182,7 +183,8 @@
   gap: 2px;
   padding: 8px 12px 0;
   border-bottom: 1px solid var(--line);
-  overflow-x: auto;
+  /* On a screen too narrow for one row, the tabs wrap rather than scroll. */
+  flex-wrap: wrap;
 }
 
 .settings-tab {
@@ -254,7 +256,7 @@
 }
 
 .settings-range input {
-  width: 92px;
+  width: 120px;
   accent-color: #4ea2ff;
 }
 

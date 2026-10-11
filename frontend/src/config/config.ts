@@ -44,6 +44,11 @@ const LEGACY_SETTINGS: Record<string, string[]> = {
 }
 
 function migrate(saved: Record<string, unknown>): Record<string, unknown> {
+  // The minimap was once just shown or not; shown, it floated over the map.
+  if ('MINIMAP.enabled' in saved) {
+    if (!('MINIMAP.layout' in saved)) saved['MINIMAP.layout'] = saved['MINIMAP.enabled'] === true ? 'floating' : 'off'
+    delete saved['MINIMAP.enabled']
+  }
   for (const [old, targets] of Object.entries(LEGACY_SETTINGS)) {
     if (!(old in saved)) continue
     for (const target of targets) {
@@ -80,6 +85,8 @@ export interface AirportPreset {
   traffic: { busy: number[][]; dead: number[][] }
   /** The airport's logo, shown in the top-left corner: a path under public/, e.g. "/logos/JFK.svg". */
   logo?: string
+  /** The control tower, for the 3D map's tower view: where it stands, and the controllers' eye height in its cab above the ground. */
+  tower?: { lat: number; lon: number; eyeFt: number }
 }
 
 export const PRESETS: Record<string, AirportPreset> = airports
@@ -325,6 +332,11 @@ export const MAP3D = {
   /** A faint heading tape along the top, with the camera's altitude beside it. */
   showHud: true,
   /**
+   * Tower view (the tower button): the camera stands in the airport's control
+   * tower cab, looking out over the field, with the minimap docked in the board.
+   */
+  tower: false,
+  /**
    * The airport's runways, taxiways, aprons and buildings on the map at true size
    * (flattening the terrain under them), drawn while the camera's within
    * airportRangeNm of it; further out, or when off, the map's simple runways show instead.
@@ -341,6 +353,49 @@ export const MAP3D = {
    */
   trueSizeNearAirport: true,
   trueSizeRangeNm: 15,
+}
+
+// ---- 3D map's minimap ----------------------------------------------------------------
+
+/**
+ * A small flat map in a corner of the 3D map, north up and centered on the
+ * airport, drawn like the 2D map with its own settings (it's much smaller).
+ * Moved and resized like the 3D airport view.
+ */
+export const MINIMAP = {
+  /**
+   * On the 3D map: none, floating over the map (moved and resized freely), or
+   * in the board, docked beside a single board that alternates arrivals and
+   * departures (below it on a landscape screen). Tower view always has it in the board.
+   */
+  layout: 'off' as 'off' | 'floating' | 'board',
+  /** Stop it from being moved or resized (its lock button), floating... */
+  locked: false,
+  /** ...and in the board, where it starts docked (locked). */
+  towerLocked: true,
+  /** Nautical miles from the airport to its edges. */
+  radiusNm: 25,
+  /** Opacity of the whole minimap, so the 3D map can show through. */
+  opacity: 0.9,
+  /** Arrivals, departures and other traffic, styled separately from the 2D map. */
+  traffic: withExtras<Omit<MapTrafficStyle, keyof TrafficStyle>>({ ...TRAIL_DEFAULTS, labels: false, trailSeconds: 120, trailWidth: 1 }),
+  /** Size of the aircraft arrows, in pixels. */
+  planeSize: 6,
+  /** Not offered for the minimap (a debug aid for the 2D map). */
+  showPredictions: false,
+  showLabels: true,
+  labelSize: 10,
+  labelLeaderLength: 16,
+  hideCrowdedLabels: true,
+  fontFamily: MAP.fontFamily,
+  /** Hill shading, separate from the toolbar's terrain button. */
+  terrain: false,
+  terrainShading: 0.8,
+  ringSpacingNm: 5,
+  /** The 2D map's weather radar (when it's on), this opaque; 0 hides it. */
+  radar: { opacity: 0.25 },
+  showRunwayGuides: true,
+  showAssistPaths: false,
 }
 
 // ---- 3D airport view ----------------------------------------------------------------
@@ -390,6 +445,22 @@ export const DIORAMA = {
   keepParkedMs: 3 * 3_600_000,
   /** Taxiing aircraft that vanish from the feed fade out after this long. */
   staleMs: 30_000,
+}
+
+// ---- Airport stats ------------------------------------------------------------------
+
+/** Landing and takeoff rates, go-arounds, rejected takeoffs and the runways in use, under the airport logo. */
+export const STATS = {
+  enabled: true,
+  /**
+   * How landings and takeoffs are counted: per hour (as airports plan their
+   * arrival and departure rates), per minute, or as the time between them.
+   */
+  rateUnit: 'hour' as 'hour' | 'minute' | 'interval',
+  /** The rates are averaged over this long. */
+  rateWindowMs: 15 * 60_000,
+  /** A runway stays listed as in use this long after an aircraft last landed on or took off from it. */
+  runwayHoldMs: 5 * 60_000,
 }
 
 // ---- Weather (METAR) --------------------------------------------------------------
@@ -447,7 +518,7 @@ export const BOARD = {
 // ---- Saved settings -----------------------------------------------------------------
 
 /** The setting groups above, by name, so settings can be addressed by path. */
-export const CONFIG = { FEED, MOTION, MAP, MAP3D, DIORAMA, METAR, ATIS, BOARD }
+export const CONFIG = { FEED, MOTION, MAP, MAP3D, MINIMAP, DIORAMA, STATS, METAR, ATIS, BOARD }
 
 /** The values above before any saved settings, for resetting. */
 export const CONFIG_DEFAULTS: typeof CONFIG = structuredClone(CONFIG)

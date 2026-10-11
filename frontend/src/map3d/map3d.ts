@@ -55,8 +55,20 @@ const LON_SCALE = Math.cos((CENTER.lat * Math.PI) / 180)
 const BACKGROUND = 0x03050a
 const CAMERA_KEY = 'map3dCamera'
 
+/**
+ * Where to stand in the street: nautical miles east (x) and north (y) of the
+ * airport, with the eye `eyeFt` above the ground (a person's if not given) and
+ * first facing compass `heading` (the way the camera faced if not given).
+ */
+export interface StreetSpot {
+  x: number
+  y: number
+  eyeFt?: number
+  heading?: number
+}
+
 /** Nautical miles east (x) and north (y) of the airport. */
-function local(p: LatLon) {
+export function local(p: LatLon) {
   return { x: (p.lon - CENTER.lon) * 60 * LON_SCALE, y: (p.lat - CENTER.lat) * 60 }
 }
 
@@ -241,6 +253,8 @@ export class Map3D {
     zoomShown: number
     tracking: boolean
     trackedHex: string | null
+    /** Eye height above the ground: a person's, or a tower cab's. */
+    eyeNm: number
     from: { position: Vector3; quaternion: Quaternion; target: Vector3 }
   } | null = null
   /** Picking where to stand in the street: a pin on the ground under the cursor shows where it'd be. */
@@ -437,7 +451,7 @@ export class Map3D {
    * ground at the airport) when the camera's near it, and standing at
    * `street` (see streetView.ts) if given. Call after the trackers have stepped.
    */
-  render(tracks: Iterable<Track>, focus: Focus | null = null, ground: Iterable<GroundTrack> = [], street: { x: number; y: number } | null = null) {
+  render(tracks: Iterable<Track>, focus: Focus | null = null, ground: Iterable<GroundTrack> = [], street: StreetSpot | null = null) {
     // Orbit (MAP3D.orbit): OrbitControls circles the target, holding tilt and distance.
     // A positive speed moves the camera clockwise seen from above.
     const now = performance.now()
@@ -1423,29 +1437,33 @@ export class Map3D {
 
   /**
    * Standing in the street at `spot` (null to step back out): eye height above
-   * the ground, true heights and sizes all round, a person's field of view.
+   * the ground (a person's, or the spot's own, as in the tower), true heights and sizes all round, a person's field of view.
    * Glides in from where the camera was, and back out to it. While tracking,
    * turns smoothly to keep the selected aircraft (`hex`, drawn at `at`) in view.
    */
-  private standInStreet(dt: number, spot: { x: number; y: number } | null, hex: string | null, at: Vector3 | null) {
+  private standInStreet(dt: number, spot: StreetSpot | null, hex: string | null, at: Vector3 | null) {
     if (spot && !this.street) {
       const facing = new Vector3()
       this.camera.getWorldDirection(facing)
       this.street = {
         blend: 0,
         spot: new Vector2(spot.x, spot.y),
-        heading: ((deg(Math.atan2(facing.x, facing.y)) % 360) + 360) % 360,
+        heading: spot.heading ?? ((deg(Math.atan2(facing.x, facing.y)) % 360) + 360) % 360,
         pitch: 0,
         zoom: 1,
         zoomShown: 1,
         tracking: hex !== null,
         trackedHex: hex,
+        eyeNm: STREET_EYE_NM,
         from: { position: this.camera.position.clone(), quaternion: this.camera.quaternion.clone(), target: this.controls.target.clone() },
       }
       this.controls.enabled = false
     }
     const street = this.street!
-    if (spot) street.spot.set(spot.x, spot.y)
+    if (spot) {
+      street.spot.set(spot.x, spot.y)
+      street.eyeNm = spot.eyeFt === undefined ? STREET_EYE_NM : (spot.eyeFt * 0.3048) / 1852
+    }
     street.blend = Math.min(Math.max(street.blend + ((spot ? 1 : -1) * dt) / STREET_BLEND_S, 0), 1)
     if (street.blend === 0 && !spot) {
       this.leaveStreet()
@@ -1458,8 +1476,14 @@ export class Map3D {
       street.tracking = hex !== null
     }
     street.zoomShown += (street.zoom - street.zoomShown) * (1 - Math.exp((-dt * 1000) / ZOOM_EASE_MS))
+    // Orbiting, standing still (in the tower or the street) turns the view around instead,
+    // the same way and speed, unless it's turning to keep an aircraft in view.
+    if (MAP3D.orbit && !street.tracking && street.blend > 0) {
+      const turn = (MAP3D.orbitDirection === 'counterclockwise' ? -1 : 1) * MAP3D.orbitSpeed * dt
+      street.heading = (((street.heading + turn) % 360) + 360) % 360
+    }
 
-    const eye = new Vector3(street.spot.x, street.spot.y, this.groundZ(street.spot.x, street.spot.y) * this.vScale + STREET_EYE_NM)
+    const eye = new Vector3(street.spot.x, street.spot.y, this.groundZ(street.spot.x, street.spot.y) * this.vScale + street.eyeNm)
     if (street.tracking && at) {
       const to = at.clone().sub(eye)
       const k = 1 - Math.exp((-dt * 1000) / STREET_TRACK_LAG_MS)
@@ -1479,7 +1503,10 @@ export class Map3D {
     this.camera.quaternion.slerpQuaternions(street.from.quaternion, standing, k)
     const fov = deg(2 * Math.atan(Math.tan(rad(this.verticalFov(STREET_HORIZONTAL_FOV)) / 2) / street.zoomShown))
     this.camera.fov = CAMERA_FOV + (fov - CAMERA_FOV) * k
-    this.camera.near = k > 0.5 ? STREET_NEAR : CAMERA_NEAR
+    // As far out as the eye height allows (the nearest thing in view is the ground below),
+    // so high up in the tower, the depth buffer keeps its precision out to the horizon
+    // and the ground doesn't flicker where the runways and taxiways lie on it.
+    this.camera.near = k > 0.5 ? Math.max(STREET_NEAR, street.eyeNm * STREET_NEAR_OF_EYE) : CAMERA_NEAR
     this.updateProjection()
   }
 
@@ -2152,6 +2179,8 @@ const TAIL_ROLL = 0.4
 const STREET_EYE_NM = (6 * 0.3048) / 1852
 const STREET_HORIZONTAL_FOV = 100
 const STREET_NEAR = 0.0008
+/** ...or this fraction of the eye height above the ground, if farther (in the tower). */
+const STREET_NEAR_OF_EYE = 0.5
 const STREET_BLEND_S = 1.6
 const STREET_LOOK_PITCH = 88
 const STREET_TRACK_LAG_MS = 180

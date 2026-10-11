@@ -1,4 +1,4 @@
-import { MAP } from '../config/config'
+import { mapStyle } from './mapStyle'
 import type { Point } from './renderer'
 
 /** Per-aircraft label state, kept between frames by the caller. */
@@ -43,7 +43,7 @@ const DIRECTIONS: [number, number][] = [
 ]
 /** Space between the aircraft icon and a label right next to it. */
 function nearGap() {
-  return MAP.planeSize + 4
+  return mapStyle().planeSize + 4
 }
 const PADDING = 3
 
@@ -60,11 +60,12 @@ const GLIDE = 0.18
 const FADE = 0.12
 
 export function newLabelState(width: number): LabelState {
-  const offset = slotOffset(0, width, MAP.labelSize)
+  const offset = slotOffset(0, width, mapStyle().labelSize)
   return { offset, target: { ...offset }, slot: -1, alpha: 0, visible: true }
 }
 
-let lastLayout = 0
+/** When labels were last placed, for each style (each map lays out its own). */
+const lastLayout = new WeakMap<object, number>()
 
 /**
  * Places labels in the best free slot around each aircraft, then glides them
@@ -74,8 +75,9 @@ let lastLayout = 0
  * item's state.
  */
 export function updateLabels(items: LabelItem[], aircraft: Point[], bounds: Bounds, now: number) {
-  if (now - lastLayout >= LAYOUT_INTERVAL_MS || items.some((i) => i.state.slot === -1)) {
-    lastLayout = now
+  const style = mapStyle()
+  if (now - (lastLayout.get(style) ?? -Infinity) >= LAYOUT_INTERVAL_MS || items.some((i) => i.state.slot === -1)) {
+    lastLayout.set(style, now)
     place(items, aircraft, bounds)
   }
   for (const { state } of items) {
@@ -87,7 +89,7 @@ export function updateLabels(items: LabelItem[], aircraft: Point[], bounds: Boun
 
 function place(items: LabelItem[], aircraft: Point[], bounds: Bounds) {
   const placed: Box[] = []
-  const iconRadius = MAP.planeSize + 1
+  const iconRadius = mapStyle().planeSize + 1
   const icons: Box[] = aircraft.map((p) => ({
     left: p.x - iconRadius,
     top: p.y - iconRadius,
@@ -120,7 +122,7 @@ function place(items: LabelItem[], aircraft: Point[], bounds: Bounds) {
 /** Box center for a slot: snug against the icon, or one leader-line length farther out. */
 function slotOffset(slot: number, width: number, height: number): Point {
   const [dx, dy] = DIRECTIONS[slot % DIRECTIONS.length]
-  const gap = nearGap() + (slot >= DIRECTIONS.length ? MAP.labelLeaderLength : 0)
+  const gap = nearGap() + (slot >= DIRECTIONS.length ? mapStyle().labelLeaderLength : 0)
   return { x: dx * (gap + width / 2), y: dy * (gap + height / 2) }
 }
 
@@ -170,6 +172,6 @@ export function leaderLine(item: LabelItem): { from: Point; to: Point } | null {
   const dy = to.y - anchor.y
   const dist = Math.hypot(dx, dy)
   if (dist < nearGap() + 6) return null
-  const start = MAP.planeSize + 2
+  const start = mapStyle().planeSize + 2
   return { from: { x: anchor.x + (dx / dist) * start, y: anchor.y + (dy / dist) * start }, to }
 }

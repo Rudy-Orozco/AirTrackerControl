@@ -108,3 +108,14 @@
     padding-right: 0.6em;
   }
 }
+
+/* Landscape: the board's column is narrow, so the cells sit closer to keep the readings on one row. */
+@media (min-aspect-ratio: 1/1) {
+  .metar-cat {
+    padding-right: 0.8em;
+  }
+
+  .metar-cell {
+    padding: 0 0.8em;
+  }
+}

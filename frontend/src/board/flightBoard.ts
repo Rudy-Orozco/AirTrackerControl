@@ -47,6 +47,13 @@ export class FlightBoard {
   private lastLanding: BoardEvent | null = null
   private lastTakeoff: BoardEvent | null = null
 
+  private readonly events?: { landed(at: number): void; tookOff(at: number): void }
+
+  /** `events` hears of each landing and takeoff as it's spotted (for the airport's stats). */
+  constructor(events?: { landed(at: number): void; tookOff(at: number): void }) {
+    this.events = events
+  }
+
   update(flights: Flight[], now: number): BoardState {
     const current = new Map(flights.map((f) => [f.hex, f]))
 
@@ -56,6 +63,7 @@ export class FlightBoard {
       if (f ? f.onGround : wasLanding(prev)) {
         this.landed.set(hex, { flight: prev, at: now })
         this.lastLanding = boardEvent(prev, now)
+        this.events?.landed(now)
       }
     }
     for (const [hex, { at }] of this.landed) {
@@ -85,7 +93,10 @@ export class FlightBoard {
         f.altitude !== null &&
         f.altitude < TAKEOFF_MAX_ALTITUDE_FT &&
         f.distanceNm < TAKEOFF_MAX_NM
-      if (wasOnGround || justClimbingOut) this.lastTakeoff = boardEvent(f, now)
+      if (wasOnGround || justClimbingOut) {
+        this.lastTakeoff = boardEvent(f, now)
+        this.events?.tookOff(now)
+      }
     }
     this.groundDepartures = new Set(onGround.map((f) => f.hex))
     this.seenDepartures = new Set([...departures, ...onGround].map((f) => f.hex))

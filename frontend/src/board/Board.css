@@ -15,7 +15,8 @@
     top: 0;
     left: auto;
     box-sizing: border-box;
-    width: min(54%, 880px);
+    /* Narrower on shorter screens: on a 1080p one, the size it'd be at 80% zoom, so the map keeps its room. */
+    width: min(54%, 880px, 65vh);
     display: flex;
     flex-direction: column;
     /* Centered, but never pushed off the top if it's taller than the screen. */
@@ -25,7 +26,8 @@
     padding-top: 56px;
     padding-bottom: 8px;
     padding-left: 10vw;
-    background: linear-gradient(to right, rgb(3 5 10 / 0), rgb(3 5 10 / 0.82) 6vw, rgb(3 5 10 / 0.95) 10vw);
+    /* Clear at first, then a short fade, so the gradient doesn't reach far into the view. */
+    background: linear-gradient(to right, rgb(3 5 10 / 0) 7vw, rgb(3 5 10 / 0.6) 8.8vw, rgb(3 5 10 / 0.75) 10vw);
   }
 }
 
@@ -280,5 +282,76 @@
   }
   to {
     stroke-dashoffset: 1;
+  }
+}
+
+/* Minimap in the board (its layout, or tower view): the board (alternating arrivals and departures) on the left and
+   the docked minimap's square slot on the right, under the weather. */
+.board-tower {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.6em;
+}
+
+.board-main {
+  min-width: 0;
+}
+
+/* Half the width: the airport's full name gives way to the clock. */
+.board-tower .board-airport {
+  min-width: 0;
+}
+
+.board-tower .board-airport small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The minimap is placed over it from script, filling it from the top of the
+   ATIS down to the screen's bottom-right corner. */
+.board-minimap-slot {
+  min-width: 0;
+}
+
+/* One column: the board, then the minimap under it, kept short enough to fit the screen. */
+@container (max-width: 760px) {
+  .board-tower {
+    grid-template-columns: 1fr;
+    gap: 0.8em;
+  }
+
+  .board-minimap-slot {
+    height: 42vh;
+  }
+}
+
+/* Minimap in the board on a landscape screen: the board at the top of its column, and the
+   minimap filling the rest of it down to the corner, however wide the column is. */
+@media (min-aspect-ratio: 1/1) {
+  .board.is-tower {
+    justify-content: flex-start;
+  }
+
+  .board.is-tower .board-inner {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* The single board's size, as when the boards stack. */
+    font-size: clamp(9px, min(2.9cqi, var(--board-max-font)), 22px);
+  }
+
+  .board.is-tower .board-tower {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8em;
+  }
+
+  .board.is-tower .board-minimap-slot {
+    flex: 1;
+    min-height: 30vh;
+    height: auto;
   }
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { aircraftSource, fetchAircraft } from './api'
 import { FlightBoard, type BoardState } from '../board/flightBoard'
 import { FEED, MOTION } from '../config/config'
+import { AirportStats, type AirportStatsState } from '../tracking/airportStats'
 import { FlightClassifier } from '../tracking/flights'
 import { RouteCache } from './routes'
 import type { GroundTracker } from '../tracking/groundTracker'
@@ -41,6 +42,7 @@ export interface BootState {
 export interface Feed {
   status: FeedStatus
   board: BoardState
+  stats: AirportStatsState | null
   boot: BootState
 }
 
@@ -56,6 +58,7 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
   const [feed, setFeed] = useState<Feed>({
     status: { count: 0, updatedAt: null, error: null, nextPoll: null, fetching: false, source: aircraftSource() },
     board: { arrivals: [], departures: [], landing: null, takeoff: null },
+    stats: null,
     boot: { steps: [], done: false, error: null },
   })
 
@@ -63,7 +66,8 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
     const controller = new AbortController()
     const routes = new RouteCache()
     const classifier = new FlightClassifier()
-    const board = new FlightBoard()
+    const stats = new AirportStats()
+    const board = new FlightBoard(stats)
     let timer: ReturnType<typeof setTimeout>
     let polls = 0
 
@@ -143,6 +147,7 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
         setFeed({
           status: { count, updatedAt: new Date(), error: null, nextPoll, fetching: false, source: aircraftSource() },
           board: board.update(flights, Date.now()),
+          stats: stats.update(flights, Date.now()),
           boot: bootState(null),
         })
       } catch (err) {
@@ -161,6 +166,7 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
     return () => {
       controller.abort()
       clearTimeout(timer)
+      stats.dispose()
     }
   }, [tracker, ground])
 

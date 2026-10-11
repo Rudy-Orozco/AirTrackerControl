@@ -1,5 +1,5 @@
 import { fetchBasemap, type Basemap } from './basemap'
-import { AIRPORT, MAP } from '../config/config'
+import { AIRPORT, MAP, MINIMAP } from '../config/config'
 import { loadRadar, RADAR_AVAILABLE, type Radar } from './radar'
 import { loadTerrain, type Terrain } from './terrain'
 
@@ -47,7 +47,7 @@ export function watchMapLayers(onChange: (layers: MapLayers) => void): () => voi
   // Terrain is ~1 MB of tiles, so it's only fetched once the setting is on (checked each second).
   let terrainState: 'idle' | 'loading' | 'done' = 'idle'
   const checkTerrain = () => {
-    if (!MAP.terrain || terrainState !== 'idle') return
+    if (!(MAP.terrain || MINIMAP.terrain) || terrainState !== 'idle') return
     terrainState = 'loading'
     loadTerrain(controller.signal)
       .then((t) => {

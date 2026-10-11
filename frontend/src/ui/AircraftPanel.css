@@ -1,9 +1,6 @@
-/* The selected aircraft's details, over the map's bottom-left corner (top-left under the logo in portrait, where the board fills the bottom). */
+/* The selected aircraft's details, in the top-left corner under the airport logo (and its stats; see .corner-stack). */
 .aircraft-panel {
-  position: absolute;
-  top: 96px;
-  left: 16px;
-  z-index: 2;
+  position: relative;
   box-sizing: border-box;
   width: min(300px, calc(100vw - 32px));
   padding: 14px 16px 10px;
@@ -15,13 +12,6 @@
   color: var(--text);
   font: 13px / 1.3 var(--mono);
   animation: aircraft-panel-in 0.25s ease-out;
-}
-
-@media (min-aspect-ratio: 1/1) {
-  .aircraft-panel {
-    top: auto;
-    bottom: 16px;
-  }
 }
 
 @keyframes aircraft-panel-in {

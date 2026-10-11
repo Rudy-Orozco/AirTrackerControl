@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type Ref, type RefObject, type WheelEvent as ReactWheelEvent } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type Ref, type WheelEvent as ReactWheelEvent } from 'react'
 import { AircraftModels } from '../aircraft/aircraftModels'
 import { AIRPORT, AIRPORT_PRESET, DIORAMA, MAP } from '../config/config'
 import {
@@ -16,23 +16,20 @@ import {
 import type { GroundTracker } from '../tracking/groundTracker'
 import { LockIcon } from '../ui/icons'
 import { isDoubleTap, type Tap } from '../lib/touch'
+import {
+  buttonsStyle,
+  clamp,
+  maxPanelSize,
+  toFractions,
+  usePointerOverWhileLocked,
+  useWindowSize,
+  validPlacement,
+  type Placement,
+  type SavedPlacement,
+} from '../lib/panel'
 import { LOCK_SETTING, RESET_DIORAMA_EVENT, setSetting, settingsVersion } from '../config/settings'
 import type { Tracker } from '../tracking/tracker'
 import './AirportDiorama.css'
-
-/** Where the panel sits and how big it is, in pixels. */
-interface Placement {
-  left: number
-  top: number
-  size: number
-}
-
-/**
- * The same as fractions of the window (left and size of its width, top of its
- * height), so it lands in the same spot on any screen size. Null until first
- * moved, while CSS places it.
- */
-type SavedPlacement = Placement
 
 interface Saved {
   placement: SavedPlacement | null
@@ -439,33 +436,6 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
   )
 }
 
-/** Room to keep between the buttons and the panel's top-right corner. */
-const BUTTONS_INSET = { top: 26, right: 6 }
-/** The toolbar along the top of the window ends this far down. */
-const TOOLBAR_CLEARANCE = 54
-/** The button column's size, so it never slides out of the panel itself. */
-const BUTTONS_SIZE = { width: 24, height: 54 }
-
-/**
- * Keeps the reset and lock buttons in the part of the panel that's on screen:
- * normally its top-right corner, but if that corner is past the window's top or
- * right edge, the top-right of whatever part is still visible.
- */
-function buttonsStyle(p: SavedPlacement | null, win: { width: number; height: number }): CSSProperties | undefined {
-  // Placed by CSS in its default corner: always fully on screen.
-  if (!p) return undefined
-  const left = p.left * win.width
-  const top = p.top * win.height
-  const size = p.size * win.width
-  const hiddenRight = clamp(left + size - win.width, 0, size)
-  // Below the window's top edge, and below the toolbar buttons that sit along it.
-  const hiddenTop = clamp(TOOLBAR_CLEARANCE - BUTTONS_INSET.top - top, 0, size)
-  return {
-    top: Math.min(hiddenTop + BUTTONS_INSET.top, size - BUTTONS_SIZE.height - 4),
-    right: Math.min(hiddenRight + BUTTONS_INSET.right, size - BUTTONS_SIZE.width - 4),
-  }
-}
-
 /** "KDFW SURFACE  3 TAXIING · 41 PARKED" */
 function caption(ground: GroundTracker) {
   let taxiing = 0
@@ -530,22 +500,9 @@ function loadSaved(): Saved {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as Saved | null
     if (!saved) return fallback
-    // Fractions of the window, possibly past its edges; reject anything else (e.g.
-    // pixels saved by an earlier version).
-    const p = saved.placement
-    const valid =
-      p && [p.left, p.top].every((v) => Number.isFinite(v) && v > -4 && v < 5) && Number.isFinite(p.size) && p.size > 0 && p.size <= 4
-    return { placement: valid ? p : null, angle: saved.angle ?? DEFAULT_ANGLE }
+    return { placement: validPlacement(saved.placement), angle: saved.angle ?? DEFAULT_ANGLE }
   } catch {
     return fallback
-  }
-}
-
-function toFractions(p: Placement): SavedPlacement {
-  return {
-    left: p.left / window.innerWidth,
-    top: p.top / window.innerHeight,
-    size: p.size / window.innerWidth,
   }
 }
 
@@ -566,48 +523,5 @@ function turned(angle: ViewAngle, rotation: number, elevation: number): ViewAngl
   }
 }
 
-/**
- * Whether the pointer is over the panel while it's locked. A locked panel lets
- * the mouse through to the map, so CSS :hover can't tell; this watches the
- * pointer instead, so hovering the panel can still reveal its lock button.
- */
-function usePointerOverWhileLocked(ref: RefObject<HTMLElement | null>, locked: boolean) {
-  const [over, setOver] = useState(false)
-  useEffect(() => {
-    if (!locked) return
-    const onMove = (e: PointerEvent) => {
-      const rect = ref.current?.getBoundingClientRect()
-      const inside = !!rect && e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom
-      setOver((was) => (was === inside ? was : inside))
-    }
-    const onLeave = () => setOver(false)
-    window.addEventListener('pointermove', onMove)
-    document.documentElement.addEventListener('pointerleave', onLeave)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      document.documentElement.removeEventListener('pointerleave', onLeave)
-    }
-  }, [ref, locked])
-  // Only meaningful while locked; a stale value from before unlocking is ignored.
-  return locked && over
-}
 
-/** The window's size, kept up to date. */
-function useWindowSize() {
-  const [size, setSize] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }))
-  useEffect(() => {
-    const update = () => setSize({ width: window.innerWidth, height: window.innerHeight })
-    window.addEventListener('resize', update)
-    return () => window.removeEventListener('resize', update)
-  }, [])
-  return size
-}
 
-/** Up to three times the window's shorter side. */
-function maxPanelSize() {
-  return Math.min(window.innerWidth, window.innerHeight) * 3
-}
-
-function clamp(v: number, min: number, max: number) {
-  return Math.min(Math.max(v, min), max)
-}

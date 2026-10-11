@@ -270,7 +270,7 @@
 @media (min-aspect-ratio: 1/1) {
   .diorama,
   .diorama-backdrop {
-    right: min(54%, 880px);
+    right: min(54%, 880px, 65vh);
     /* The map is narrower than on a portrait screen; leave it room. */
     width: min(21vw, 40vh);
   }

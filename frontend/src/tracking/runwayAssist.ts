@@ -36,6 +36,8 @@ export class RunwayAssist {
   /** How strongly each runway direction's guides are shown (see guides), eased, and when they were last worked out. */
   private readonly guideShown = new Map<string, number>()
   private guidesAt: number | null = null
+  /** When each runway direction was last in use ("L27L" landing, "D26L" departing), for runwaysInUse. */
+  private readonly lastUsed = new Map<string, number>()
 
   constructor(layout: AirportLayout) {
     // A runway may come in several pieces sharing a name: its ends are its two furthest points.
@@ -47,13 +49,13 @@ export class RunwayAssist {
       points.push(...r.line.map(([lon, lat]) => this.toMeters({ lat, lon })))
       byRef.set(ref, points)
     })
-    this.ends = [...byRef.values()].flatMap((points) => {
+    this.ends = [...byRef].flatMap(([ref, points]) => {
       let [a, b] = [points[0], points[0]]
       for (const p of points) for (const q of points) if (dist(p, q) > dist(a, b)) [a, b] = [p, q]
       const length = dist(a, b)
       if (length < 500) return []
       // Landing toward either end, so a direction each way.
-      return [end(a, b, length), end(b, a, length)]
+      return [end(a, b, length, ref), end(b, a, length, ref)]
     })
   }
 
@@ -150,6 +152,27 @@ export class RunwayAssist {
    * gate where it starts holding them to it (GLIDE_FROM_FT) and the touchdown
    * aiming point. Taking off: the climb-out (centerline and edges).
    */
+  /**
+   * The runways aircraft are landing on and taking off from, by name (e.g.
+   * "27L"): in use right now, or within the last `holdMs` (so one stays listed
+   * between aircraft, rather than going the moment one has taken off).
+   */
+  runwaysInUse(now: number, holdMs: number): { landing: string[]; departing: string[] } {
+    for (const [t, s] of this.state) {
+      if (!s.end?.name || t.opacity <= 0) continue
+      if ((t.takeoff && !s.landing ? 1 : s.k) < IN_USE_FROM) continue
+      this.lastUsed.set(`${s.landing ? 'L' : 'D'}${s.end.name}`, now)
+    }
+    const landing = new Set<string>()
+    const departing = new Set<string>()
+    for (const [key, at] of this.lastUsed) {
+      if (now - at > holdMs) this.lastUsed.delete(key)
+      else (key[0] === 'L' ? landing : departing).add(key.slice(1))
+    }
+    const sorted = (names: Set<string>) => [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    return { landing: sorted(landing), departing: sorted(departing) }
+  }
+
   guides(now: number): RunwayGuide[] {
     const dt = this.guidesAt === null ? 0 : Math.max(now - this.guidesAt, 0)
     this.guidesAt = now
@@ -453,6 +476,8 @@ interface RunwayEnd {
   length: number
   /** Degrees from north along `dir`. */
   bearing: number
+  /** Its name, e.g. "27L", if the runway has one. */
+  name: string | null
 }
 
 interface Fit {
@@ -469,9 +494,22 @@ interface Fit {
 
 const NO_FIT: Fit = { score: 0, end: null, along: 0, glideFt: null, glideWeight: 0, offCenter: 1 }
 
-function end(from: Vec, to: Vec, length: number): RunwayEnd {
+function end(from: Vec, to: Vec, length: number, ref: string): RunwayEnd {
   const dir = { x: (to.x - from.x) / length, y: (to.y - from.y) / length }
-  return { from, dir, length, bearing: (Math.atan2(dir.x, dir.y) * 180) / Math.PI }
+  const bearing = (Math.atan2(dir.x, dir.y) * 180) / Math.PI
+  return { from, dir, length, bearing, name: endName(ref, bearing) }
+}
+
+/**
+ * The name of the end of runway `ref` (e.g. "09R/27L") flown along `bearing`:
+ * of its two names, the one whose number (magnetic, in tens of degrees) is
+ * nearer. Unnamed runways have none.
+ */
+function endName(ref: string, bearing: number): string | null {
+  const names = ref.split('/').filter((n) => /^\d{1,2}/.test(n))
+  if (names.length === 0) return null
+  const off = (n: string) => Math.abs(angleTo(bearing, parseInt(n, 10) * 10))
+  return names.reduce((best, n) => (off(n) < off(best) ? n : best))
 }
 
 /** Meters right of runway `e`'s centerline (looking along it). */
@@ -577,6 +615,8 @@ const RELEASE_MS = 1500
 /** Paths are drawn once the assist is at least this engaged, with this many points. */
 const MIN_SHOWN = 0.05
 const PATH_POINTS = 24
+/** How strongly an aircraft must be held to a runway for that runway to count as in use. */
+const IN_USE_FROM = 0.5
 const FPS_PER_KT = 1.68781
 /** About 7°: a typical airliner's initial climb, when no climb rate is sent. */
 const TYPICAL_GRADIENT = 0.12

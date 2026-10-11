@@ -1,14 +1,15 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { isDoubleTap, TAP_SLOP_PX, type Tap } from '../lib/touch'
 import { uncoveredArea } from '../lib/layout'
-import { AIRPORT } from '../config/config'
+import { AIRPORT, MAP3D } from '../config/config'
 import { fetchAirportLayout } from '../diorama/diorama'
 import { Map3D } from './map3d'
 import { cancelPicking, orbitAnchor, plantAxis, setAnchorHeight, subscribeOrbitAnchor } from './orbitAnchor'
 import { leaveStreetView, setStreetAvailable, standAt, streetView, subscribeStreetView } from './streetView'
+import { inTowerView, TOWER_SPOT } from './tower'
 import { watchMapLayers, type MapLayers } from '../map/mapLayers'
 import { labelFont } from '../map/renderer'
-import { RESET_CAMERA_EVENT, settingsVersion } from '../config/settings'
+import { RESET_CAMERA_EVENT, setSetting, settingsVersion, TOWER_SETTING } from '../config/settings'
 import { STORE_CAMERA_EVENT } from '../config/profiles'
 import type { GroundTracker } from '../tracking/groundTracker'
 import { locateAircraft, rideView, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
@@ -84,6 +85,7 @@ export function AirTraffic3D({
     const reset = () => {
       selectAircraft(null)
       leaveStreetView()
+      if (MAP3D.tower) setSetting(TOWER_SETTING, false)
       map.resetCamera()
     }
     window.addEventListener(RESET_CAMERA_EVENT, reset)
@@ -167,8 +169,9 @@ export function AirTraffic3D({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (orbitAnchor().picking) cancelPicking()
-      // Escape lets go of a selected aircraft first (the info panel), then steps out of the street.
+      // Escape lets go of a selected aircraft first (the info panel), then steps out of the street or down from the tower.
       else if (streetView().state === 'placing' || (streetView().state === 'standing' && !selectedAircraft())) leaveStreetView()
+      else if (inTowerView() && !selectedAircraft()) setSetting(TOWER_SETTING, false)
     }
 
     // Riding along with an aircraft or standing in the street (the camera controls are
@@ -272,7 +275,8 @@ export function AirTraffic3D({
             }
           : null,
         ground.tracks.values(),
-        streetView().state === 'standing' ? streetView().spot : null,
+        // The tower takes over from the street.
+        inTowerView() ? TOWER_SPOT : streetView().state === 'standing' ? streetView().spot : null,
       )
       setStreetAvailable(map.isNearAirport())
       frame = requestAnimationFrame(loop)

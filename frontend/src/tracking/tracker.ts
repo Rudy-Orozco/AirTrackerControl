@@ -403,6 +403,11 @@ export class Tracker {
     return this.assist?.path(t) ?? null
   }
 
+  /** The runways in use now or within the last `holdMs`, by name (see RunwayAssist.runwaysInUse); none without the runway assist. */
+  runwaysInUse(now: number, holdMs: number) {
+    return this.assist && MOTION.runwayAssist ? this.assist.runwaysInUse(now, holdMs) : { landing: [], departing: [] }
+  }
+
   /** What the runway assist guides aircraft along on the runways in use (see RunwayAssist.guides), for drawing. */
   runwayGuides(now: number) {
     return this.assist?.guides(now) ?? []

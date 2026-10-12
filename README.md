@@ -1,4 +1,4 @@
-# AirTrafficArt
+# AirTrackerControl
 
 Live air traffic around an airport: a 2D radar-style map, a 3D map, a 3D airport
 diorama and a split-flap arrivals/departures board with live weather (METAR/ATIS).

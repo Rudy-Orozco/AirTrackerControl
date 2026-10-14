@@ -9,8 +9,14 @@
  *   Ctrl+R         reload
  *   Ctrl+Shift+I   developer tools
  *   --kiosk        start full screen with no way out but closing (for a wall display)
+ *
+ * Installed copies update themselves from the GitHub releases (see the publish
+ * settings in package.json): a new version downloads in the background, then
+ * the app installs it and restarts on its own, in kiosk mode if it was in it.
  */
 import { app, BrowserWindow, ipcMain, net, protocol, shell } from 'electron'
+import updater from 'electron-updater'
+import { readFileSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,12 +25,15 @@ import { API_ROUTES } from '../api-routes.mjs'
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DIST = path.join(ROOT, 'dist')
 // A fixed origin, so what the page keeps in localStorage (settings, layout) survives restarts.
-const ORIGIN = 'app://airtrafficart'
-const KIOSK = process.argv.includes('--kiosk')
+const ORIGIN = 'app://airtrackercontrol'
+/** Kiosk mode: from --kiosk, or carried over from before an update restarted the app (see installUpdates). */
+const KIOSK = process.argv.includes('--kiosk') || takeRelaunchState().kiosk === true
 /** Zoom levels: each step is ×1.2 (Chromium's scale); this range is about 35% to 300%. */
 const ZOOM_STEP = 0.5
 const MIN_ZOOM = -5.5
 const MAX_ZOOM = 6
+/** How often to look for a new release. */
+const UPDATE_CHECK_MS = 60 * 60_000
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -65,6 +74,78 @@ async function handle(request) {
   } catch {
     return new Response('Not found', { status: 404 })
   }
+}
+
+// ---- Updates ----------------------------------------------------------------------
+
+/** Where the app notes how it was running before an update restarts it (the installer starts it without its arguments). */
+function relaunchFile() {
+  return path.join(app.getPath('userData'), 'relaunch.json')
+}
+
+/** What was noted before the last update's restart, removed once read so it applies only once. Synchronous: it's needed before the app's ready. */
+function takeRelaunchState() {
+  try {
+    const state = JSON.parse(readFileSync(relaunchFile(), 'utf8'))
+    rmSync(relaunchFile(), { force: true })
+    return state
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Where updating has got to, for the settings' Updates section (see
+ * electron/preload.cjs): state is 'unavailable' (not an installed copy),
+ * 'idle', 'checking', 'latest', 'downloading' (with percent), 'installing' or
+ * 'error' (with message).
+ */
+let updateStatus = { state: 'idle', version: app.getVersion() }
+
+function setUpdateStatus(status) {
+  updateStatus = { ...status, version: app.getVersion() }
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send('update-status', updateStatus)
+}
+
+/** Looks for a new release (it downloads by itself if there is one). */
+async function checkForUpdates() {
+  if (updateStatus.state === 'unavailable' || updateStatus.state === 'downloading' || updateStatus.state === 'installing') return updateStatus
+  setUpdateStatus({ state: 'checking' })
+  await updater.autoUpdater.checkForUpdates().catch(() => {})
+  return updateStatus
+}
+
+ipcMain.handle('update-status', () => updateStatus)
+ipcMain.handle('check-for-updates', () => checkForUpdates())
+
+/**
+ * Checks for a new release now and every UPDATE_CHECK_MS. Once one has
+ * downloaded, installs it quietly and restarts, so a wall display is never left
+ * closed. Only in an installed copy: not in development or the portable zip.
+ */
+function installUpdates() {
+  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) {
+    setUpdateStatus({ state: 'unavailable' })
+    return
+  }
+  const { autoUpdater } = updater
+  autoUpdater.autoDownload = true
+  autoUpdater.on('update-not-available', () => setUpdateStatus({ state: 'latest' }))
+  autoUpdater.on('update-available', (info) => setUpdateStatus({ state: 'downloading', next: info.version, percent: 0 }))
+  autoUpdater.on('download-progress', (p) => setUpdateStatus({ ...updateStatus, state: 'downloading', percent: Math.round(p.percent) }))
+  autoUpdater.on('error', (err) => {
+    console.warn('Update failed:', err?.message ?? err)
+    setUpdateStatus({ state: 'error', message: String(err?.message ?? err).split('\n')[0] })
+  })
+  autoUpdater.on('update-downloaded', async (info) => {
+    console.log(`Installing ${info.version} and restarting`)
+    setUpdateStatus({ state: 'installing', next: info.version })
+    await writeFile(relaunchFile(), JSON.stringify({ kiosk: KIOSK })).catch(() => {})
+    // Silent install, then start the app again.
+    autoUpdater.quitAndInstall(true, true)
+  })
+  checkForUpdates()
+  setInterval(checkForUpdates, UPDATE_CHECK_MS)
 }
 
 // ---- Window size and position, remembered between runs ------------------------------
@@ -118,7 +199,7 @@ async function createWindow() {
     minWidth: 480,
     minHeight: 480,
     backgroundColor: '#03050a',
-    title: 'Air Traffic Art',
+    title: 'AirTrackerControl',
     // Lets the page's zoom buttons reach zoomWindow (electron/preload.cjs).
     webPreferences: { preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs') },
     autoHideMenuBar: true,
@@ -129,6 +210,10 @@ async function createWindow() {
   win.setMenuBarVisibility(false)
   if (state.maximized) win.maximize()
   win.once('ready-to-show', () => win.show())
+  // A crashed or killed page comes straight back, so a wall display never sits blank.
+  win.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason !== 'clean-exit') win.webContents.reload()
+  })
   win.on('close', () => saveWindowState(win))
 
   // Links (e.g. map attribution) open in the normal browser.
@@ -165,6 +250,7 @@ async function createWindow() {
 app.whenReady().then(() => {
   protocol.handle('app', handle)
   createWindow()
+  installUpdates()
   // macOS: reopen a window when the dock icon is clicked.
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

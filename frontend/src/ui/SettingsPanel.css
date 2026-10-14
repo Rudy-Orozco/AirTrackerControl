@@ -431,6 +431,11 @@
   background: rgb(220 230 245 / 0.08);
 }
 
+.settings-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .settings-action.is-primary {
   border-color: #4ea2ff;
   background: #4ea2ff;

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { DIORAMA, MAP, MAP3D, PROCEDURES } from '../config/config'
-import { desktop } from '../lib/desktop'
+import { desktop, type UpdateStatus } from '../lib/desktop'
 import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
 import { cancelPicking, clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
 import { leaveStreetView, toggleStreetView, useStreetView } from '../map3d/streetView'
@@ -291,6 +291,8 @@ export function SettingsPanel() {
               </section>
               )
             })}
+            {/* Desktop app only: a web page is always the latest. */}
+            {desktop && activeTab.title === 'General' && <UpdatesGroup />}
           </div>
           <footer className="settings-footer">
             <SaveRow />
@@ -793,6 +795,53 @@ function MoreIcon() {
       <circle cx="19" cy="12" r="1.7" />
     </svg>
   )
+}
+
+/**
+ * The version running and where updating has got to, with a button to look for
+ * a new release now. One found downloads, installs and restarts the app by
+ * itself (electron/main.mjs).
+ */
+function UpdatesGroup() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null)
+
+  useEffect(() => {
+    desktop!.updateStatus().then(setStatus, () => {})
+    return desktop!.onUpdateStatus(setStatus)
+  }, [])
+
+  const busy = status?.state === 'checking' || status?.state === 'downloading' || status?.state === 'installing'
+  return (
+    <section className="settings-group">
+      <h3>Updates</h3>
+      <p className="settings-note-line">{status ? updateText(status) : 'Loading…'}</p>
+      {status?.state !== 'unavailable' && (
+        <button type="button" className="settings-action" disabled={busy} onClick={() => desktop!.checkForUpdates().then(setStatus, () => {})}>
+          {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
+        </button>
+      )}
+    </section>
+  )
+}
+
+function updateText(s: UpdateStatus) {
+  const running = `Version ${s.version}`
+  switch (s.state) {
+    case 'unavailable':
+      return `${running}. Only the installed app updates itself (not this copy).`
+    case 'checking':
+      return `${running}. Checking for a new version…`
+    case 'latest':
+      return `${running}, the latest.`
+    case 'downloading':
+      return `${running}. Downloading ${s.next ?? 'the new version'}: ${s.percent ?? 0}%`
+    case 'installing':
+      return `Installing ${s.next ?? 'the new version'}; the app restarts in a moment.`
+    case 'error':
+      return `${running}. Couldn't check for updates: ${s.message ?? 'unknown error'}`
+    default:
+      return `${running}. Checks for updates every hour.`
+  }
 }
 
 /** A dot with an arrow circling it. */

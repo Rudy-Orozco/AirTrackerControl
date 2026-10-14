@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AirportDiorama } from './diorama/AirportDiorama'
 import { AirTraffic3D } from './map3d/AirTraffic3D'
 import { Minimap } from './map3d/Minimap'
@@ -10,6 +10,8 @@ import { AirportStats } from './ui/AirportStats'
 import { Board } from './board/Board'
 import { BootScreen } from './ui/BootScreen'
 import { FeedLost } from './ui/FeedLost'
+import { Intro } from './ui/Intro'
+import { introPending } from './ui/introShown'
 import { AIRPORT, DIORAMA, MAP, METAR, STATS } from './config/config'
 import { fetchAirportLayout } from './diorama/diorama'
 import { GroundTracker } from './tracking/groundTracker'
@@ -24,6 +26,21 @@ import { useAircraftFeed } from './feed/useAircraftFeed'
 const PRODUCT_NAME = 'Air Tracker Control'
 
 export default function App() {
+  const [intro] = useState(introPending)
+  // Nothing loads (no aircraft feed, weather, radar or maps) until the intro's done.
+  const [started, setStarted] = useState(!intro)
+  const start = useCallback(() => setStarted(true), [])
+
+  return (
+    <>
+      {started && <Dashboard />}
+      {intro && <Intro name={PRODUCT_NAME} onExit={start} />}
+    </>
+  )
+}
+
+/** The maps, board and panels, with the aircraft feed behind them. */
+function Dashboard() {
   const [tracker] = useState(() => new Tracker())
   const [ground] = useState(() => new GroundTracker())
   const { status, board, stats, boot } = useAircraftFeed(tracker, ground)

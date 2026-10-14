@@ -1,0 +1,186 @@
+/* Over everything until it fades, then the boot screen shows underneath. */
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  /* A faint dot grid, fading out toward the edges. */
+  background:
+    radial-gradient(circle, rgb(220 230 245 / 0.07) 1px, transparent 1.5px) center / 24px 24px,
+    var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  cursor: pointer;
+  transition: opacity 800ms ease;
+}
+
+.intro::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 20%, var(--bg) 75%);
+  pointer-events: none;
+}
+
+.intro.is-hiding {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.intro.is-hiding .intro-center {
+  filter: blur(6px);
+  transform: scale(0.98);
+  transition: filter 800ms ease, transform 800ms ease;
+}
+
+.intro-center {
+  position: relative;
+  text-align: center;
+}
+
+/* A small bracketed label over the name, with a live dot. */
+.intro-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  animation: intro-rise 700ms ease 100ms both;
+}
+
+.intro-tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--arrival);
+  box-shadow: 0 0 8px var(--arrival);
+  animation: intro-pulse 1.6s ease-in-out infinite;
+}
+
+.intro-title {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.35em;
+  margin: 0;
+  font-size: clamp(22px, 5vw, 64px);
+  line-height: 1;
+  --cell: 0.66em;
+}
+
+.intro-title .flap {
+  height: 1.3em;
+  line-height: 1.3em;
+  font-weight: 700;
+}
+
+.intro-rule {
+  width: clamp(48px, 8vw, 96px);
+  height: 2px;
+  margin: 28px auto 22px;
+  background: linear-gradient(to right, var(--arrival), var(--departure));
+  transform: scaleX(0);
+  animation: intro-draw 900ms cubic-bezier(0.6, 0, 0.2, 1) 1300ms forwards;
+}
+
+.intro-author {
+  margin: 0;
+  font-size: clamp(12px, 1.3vw, 15px);
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  animation: intro-rise 800ms ease 2000ms both;
+}
+
+.intro-prompt {
+  color: var(--departure);
+}
+
+.intro-author b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.intro-credits {
+  position: absolute;
+  bottom: 28px;
+  left: 16px;
+  right: 16px;
+  margin: 0;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  animation: intro-rise 800ms ease 2500ms both;
+}
+
+.intro-credits-label {
+  margin-right: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+/* Time left before the app opens, along the bottom edge. */
+.intro-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(to right, var(--arrival), var(--departure));
+  opacity: 0.6;
+  transform-origin: left;
+  animation: intro-progress linear both;
+}
+
+@keyframes intro-draw {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes intro-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes intro-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes intro-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-tag::before {
+    animation: none;
+  }
+
+  .intro.is-hiding .intro-center {
+    filter: none;
+    transform: none;
+  }
+}

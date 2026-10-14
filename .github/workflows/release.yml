@@ -27,3 +27,16 @@ jobs:
       - run: npm run dist:win -- --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The version's section of CHANGELOG.md becomes the release's notes.
+      - name: Release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          node -e "
+            const md = require('fs').readFileSync('../CHANGELOG.md', 'utf8')
+            const section = md.split(/^## /m).find((s) => s.split(/\s/)[0] === process.argv[1])
+            process.stdout.write(section ? section.slice(section.indexOf('\n') + 1).trim() : '')
+          " "$VERSION" > notes.md
+          if [ -s notes.md ]; then gh release edit "v$VERSION" --notes-file notes.md; else echo "No CHANGELOG.md entry for $VERSION"; fi

@@ -3,7 +3,7 @@
   "productName": "AirTrackerControl",
   "description": "Live air traffic around an airport: map, 3D views and a split-flap arrivals/departures board.",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "electron/main.mjs",
   "type": "module",
   "scripts": {
@@ -18,7 +18,8 @@
     "dist:win": "npm run build && electron-builder --win --x64",
     "dist:linux": "npm run build && electron-builder --linux",
     "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win:zip": "npm run build && electron-builder --win zip --x64"
+    "dist:win:zip": "npm run build && electron-builder --win zip --x64",
+    "release": "node release.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
@@ -65,6 +66,7 @@
       ]
     },
     "nsis": {
+      "artifactName": "${productName}-Setup.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },

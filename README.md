@@ -339,9 +339,13 @@ version downloads in the background, installs quietly and the app restarts on
 its own (back in kiosk mode if it was in it). To publish one, from `frontend/`:
 
 ```sh
-npm version patch        # bumps the version, commits and tags it (v0.1.1)
-git push --follow-tags   # the Release workflow builds the installer and publishes it
+npm run release          # or: npm run release minor / major
 ```
+
+It lists the commits since the last release and asks what changed (one line
+each, empty line to finish), adds that to `CHANGELOG.md` (the release notes and
+the app's What's new), bumps the version, then commits everything, tags it and
+pushes. The Release workflow builds the installer and publishes it.
 
 Only the installed app updates, not the portable zip or `npm run desktop`.
 Everything the page uses is bundled into `dist/`, so it's all in

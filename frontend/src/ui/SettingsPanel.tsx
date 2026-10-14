@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { DIORAMA, MAP, MAP3D, PROCEDURES } from '../config/config'
+import { CHANGELOG } from '../lib/changelog'
 import { desktop, type UpdateStatus } from '../lib/desktop'
 import { AIRPORT_AT_START, currentLayout, hasUnsavedChanges, LAYOUT_LABELS, revertToSaved, savedAt, saveSetup } from '../config/profiles'
 import { cancelPicking, clearAnchor, toggleAnchor, useOrbitAnchor } from '../map3d/orbitAnchor'
@@ -824,6 +825,23 @@ function UpdatesGroup() {
           {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
         </button>
       )}
+      <details className="settings-changelog">
+        <summary>What's new</summary>
+        {CHANGELOG.map((r) => (
+          <div key={r.version} className={r.version === status?.version ? 'is-current' : undefined}>
+            <h4>
+              {r.version}
+              {r.date && <small> · {r.date}</small>}
+              {r.version === status?.version && <small> · running</small>}
+            </h4>
+            <ul>
+              {r.items.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </details>
     </section>
   )
 }

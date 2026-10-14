@@ -431,6 +431,41 @@
   background: rgb(220 230 245 / 0.08);
 }
 
+.settings-changelog {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.settings-changelog summary {
+  cursor: pointer;
+  color: var(--text);
+}
+
+.settings-changelog > div {
+  margin-top: 8px;
+}
+
+.settings-changelog h4 {
+  margin: 0 0 2px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.settings-changelog h4 small {
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.settings-changelog ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.settings-changelog li + li {
+  margin-top: 2px;
+}
+
 .settings-action:disabled {
   opacity: 0.5;
   cursor: default;

@@ -6,6 +6,10 @@ GitHub and shows in the app under Settings › General › Updates › What's ne
 
 Each release is a `## <version> — <date>` heading followed by `- ` lines.
 
+## 0.1.5 — 2026-10-13
+
+- Testing Changelog
+
 ## 0.1.4 — 2026-10-13
 
 - "Only registered app installed"

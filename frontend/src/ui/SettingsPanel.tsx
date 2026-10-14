@@ -68,6 +68,8 @@ export function SettingsPanel() {
     if (!open && !menu && !proceduresOpen) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // A modal over the panel (the changelog) closes by itself, leaving the panel open.
+      if (document.querySelector('dialog[open]')) return
       setOpen(false)
       setMenu(null)
       setProceduresOpen(false)
@@ -805,6 +807,7 @@ function MoreIcon() {
  */
 function UpdatesGroup() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
+  const [changelogOpen, setChangelogOpen] = useState(false)
 
   useEffect(() => {
     desktop!.updateStatus().then(setStatus, () => {})
@@ -821,29 +824,63 @@ function UpdatesGroup() {
         Build {__BUILD__.commit} · {new Date(__BUILD__.time).toLocaleString()}
       </p>
       {status?.exe && <p className="settings-note-line settings-exe">Running {status.exe}</p>}
-      {status?.state !== 'unavailable' && (
-        <button type="button" className="settings-action" disabled={busy} onClick={() => desktop!.checkForUpdates().then(setStatus, () => {})}>
-          {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
+      <div className="settings-actions">
+        {status?.state !== 'unavailable' && (
+          <button type="button" className="settings-action" disabled={busy} onClick={() => desktop!.checkForUpdates().then(setStatus, () => {})}>
+            {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
+        <button type="button" className="settings-action" onClick={() => setChangelogOpen(true)}>
+          What's new
         </button>
-      )}
-      <details className="settings-changelog">
-        <summary>What's new</summary>
-        {CHANGELOG.map((r) => (
-          <div key={r.version} className={r.version === status?.version ? 'is-current' : undefined}>
-            <h4>
-              {r.version}
-              {r.date && <small> · {r.date}</small>}
-              {r.version === status?.version && <small> · running</small>}
-            </h4>
-            <ul>
-              {r.items.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </details>
+      </div>
+      {changelogOpen && <ChangelogDialog running={status?.version} onClose={() => setChangelogOpen(false)} />}
     </section>
+  )
+}
+
+/** Every release's notes from CHANGELOG.md, in a modal over the app; Esc, the × or a click outside closes it. */
+function ChangelogDialog({ running, onClose }: { running?: string; onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    ref.current?.showModal()
+  }, [])
+
+  return (
+    <dialog
+      ref={ref}
+      className="changelog-dialog"
+      aria-labelledby="changelog-title"
+      onClose={onClose}
+      // A click on the backdrop lands on the dialog itself, outside its content.
+      onClick={(e) => e.target === e.currentTarget && ref.current?.close()}
+    >
+      <div className="changelog-content">
+        <header className="changelog-header">
+          <h2 id="changelog-title">What's new</h2>
+          <button type="button" className="settings-close" aria-label="Close" onClick={() => ref.current?.close()}>
+            ×
+          </button>
+        </header>
+        <div className="changelog-releases">
+          {CHANGELOG.map((r) => (
+            <section key={r.version} className={`changelog-release${r.version === running ? ' is-current' : ''}`}>
+              <h3>
+                {r.version}
+                {r.version === running && <span className="changelog-badge">Running</span>}
+                {r.date && <small>{r.date}</small>}
+              </h3>
+              <ul>
+                {r.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </div>
+    </dialog>
   )
 }
 

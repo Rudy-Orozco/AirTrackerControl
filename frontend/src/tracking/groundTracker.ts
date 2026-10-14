@@ -2,7 +2,7 @@ import { DIORAMA, FEED, MOTION } from '../config/config'
 import type { Flight } from './flights'
 import { hermite, hermiteSlope, overdueFor, type Handoff, type LatLon } from './tracker'
 import type { AirportLayout } from '../diorama/diorama'
-import { TaxiNetwork } from './taxiNetwork'
+import { TaxiNetwork, TaxiRoute } from './taxiNetwork'
 
 export interface GroundTrack {
   info: Flight
@@ -37,6 +37,12 @@ export interface GroundTrack {
 
   /** Which way the nose points, as last reported (null if it isn't sent); a pushback moves the other way. */
   nose: number | null
+  /**
+   * The way along the centerlines from `from` to `to`, when there is one: a
+   * taxiing aircraft is moved along it instead of curving straight between
+   * reports, so it follows the lines round corners.
+   */
+  route: TaxiRoute | null
   /** How far (degrees lat/lon) the drawn position sits from the glide between reports, easing onto the centerline it's on. */
   snapOffset: LatLon
   /** When step() last ran for it, so easing keeps time however often it's called. */
@@ -70,7 +76,9 @@ export interface GroundTrack {
  *
  * Once the airport's layout is known (setLayout), moving aircraft are kept on
  * the taxiway and runway centerlines, and point the way they're moving along
- * them: nose first, or tail first while pushing back.
+ * them: nose first, or tail first while pushing back. Taxiing, each new report
+ * is reached by the shortest way along the lines (TaxiNetwork.route), so they
+ * go round corners the way the aircraft did rather than cutting across.
  */
 export class GroundTracker {
   readonly tracks = new Map<string, GroundTrack>()
@@ -151,6 +159,7 @@ export class GroundTracker {
           stoppedSince: stopped && !landing ? now - DIORAMA.parkedAfterMs : null,
           parked: stopped && !landing,
           nose: f.trueHeading,
+          route: null,
           snapOffset: { lat: 0, lon: 0 },
           steppedAt: null,
           pos: landing?.pos ?? reported,
@@ -164,6 +173,19 @@ export class GroundTracker {
       }
 
       existing.info = f
+      existing.lastSeen = now
+      // Taxiing, a fetch with no newer position than last time (ground reports often come less
+      // often than fetches): carry on along the glide to it rather than arriving and sitting there.
+      const lastAt = existing.lastSpeed?.at ?? null
+      if (!predicted && !existing.predicted && lastAt !== null && reportedAt - lastAt < SAME_REPORT_MS) {
+        existing.stoppedSince = stopped ? (existing.stoppedSince ?? now) : null
+        existing.parked = existing.stoppedSince !== null && now - existing.stoppedSince >= DIORAMA.parkedAfterMs
+        continue
+      }
+      // Taxiing, it takes as long to get there as the aircraft took between its two reports, so it
+      // arrives about when the next one does; a predicted roll aims a fetch ahead instead.
+      const glideMs =
+        !predicted && lastAt !== null && segmentMs > 0 ? clamp(reportedAt - lastAt, segmentMs * 0.5, FEED.pollMs * 3) : segmentMs
       // Carries on from exactly where (and how fast) it's drawn: that's already on the
       // centerline, so the easing onto it starts over.
       existing.from = existing.pos
@@ -184,12 +206,29 @@ export class GroundTracker {
       existing.nose = f.trueHeading
       existing.toHeading = f.trueHeading ?? (stopped || f.track === null ? existing.heading : f.track)
       existing.segmentStart = now
-      existing.segmentMs = segmentMs
+      existing.segmentMs = glideMs
       existing.fromHeightFt = existing.heightFt
       existing.fromHeightRate = existing.heightRate
-      existing.lastSeen = now
       existing.stoppedSince = stopped ? (existing.stoppedSince ?? now) : null
       existing.parked = existing.stoppedSince !== null && now - existing.stoppedSince >= DIORAMA.parkedAfterMs
+
+      // Taxiing (not a predicted roll): the way along the lines to the new report, ending on its line.
+      existing.route = null
+      if (this.network && MOTION.taxiwaySnap && MOTION.taxiwayRoutes && !predicted && !overshot && glideMs > 0 && metersBetween(existing.from, existing.to) > MIN_MOVE_M) {
+        const lat = existing.from.lat
+        const fromMotion = metersPerMs(existing.vel, lat) > MIN_SPEED ? bearingOf(existing.vel, lat) : null
+        // A track reported at a crawl is mostly noise.
+        const toMotion = gs >= ROUTE_TRACK_KT && f.track !== null ? f.track : null
+        // No further than it could have gone at the speeds it was moving and reported (with room for GPS error).
+        const travel = ((metersPerMs(existing.vel, lat) + gs * MS_PER_KT) / 2) * glideMs
+        const maxLength = Math.max(travel * ROUTE_SPEED_SLACK, metersBetween(existing.from, existing.to) * 1.3) + ROUTE_SLACK_M
+        const path = this.network.route(existing.from, fromMotion, existing.to, toMotion, maxLength)
+        const route = path && new TaxiRoute([existing.from, ...path])
+        if (route && route.length > MIN_MOVE_M) {
+          existing.route = route
+          existing.to = path[path.length - 1]
+        }
+      }
     }
   }
 
@@ -209,7 +248,22 @@ export class GroundTracker {
       // to a stop just short of where it's drawn, say): it'd turn round to come back.
       const [v0, v1] = noOvershoot(t.from, t.fromVelocity, t.to, t.toVelocity, t.segmentMs)
       let glide: LatLon
-      if (u < 1) {
+      if (u < 1 && t.route) {
+        // Along the route, easing from the speed it was moving at to the one reported (never so
+        // fast at either end that it'd run past the end and come back).
+        const length = t.route.length
+        const most = (MAX_OVERSHOOT * length) / t.segmentMs
+        const s0 = Math.min(metersPerMs(t.fromVelocity, t.from.lat), most)
+        const s1 = Math.min(metersPerMs(t.toVelocity, t.to.lat), most)
+        const along = t.route.pointAt(hermite(0, s0, length, s1, t.segmentMs, u))
+        const speed = Math.max(hermiteSlope(0, s0, length, s1, t.segmentMs, u), 0)
+        glide = along.pos
+        const rad = (along.bearing * Math.PI) / 180
+        t.vel = {
+          lat: (speed * Math.cos(rad)) / M_PER_DEG_LAT,
+          lon: (speed * Math.sin(rad)) / (M_PER_DEG_LAT * Math.cos((glide.lat * Math.PI) / 180)),
+        }
+      } else if (u < 1) {
         glide = {
           lat: hermite(t.from.lat, v0.lat, t.to.lat, v1.lat, t.segmentMs, u),
           lon: hermite(t.from.lon, v0.lon, t.to.lon, v1.lon, t.segmentMs, u),
@@ -284,6 +338,13 @@ export class GroundTracker {
   }
 }
 
+/** Reports this close together (ms) are the same report fetched again (allowing for fetch latency). */
+const SAME_REPORT_MS = 1500
+/** Below this ground speed (knots) the reported track is too noisy to say which way a route should arrive. */
+const ROUTE_TRACK_KT = 4
+/** A route can be this many times as long as the distance the speeds say it covered, plus this many meters, before it's taken to be wrong. */
+const ROUTE_SPEED_SLACK = 1.5
+const ROUTE_SLACK_M = 30
 /** Tugs push back slower than this (knots); anything faster going "backwards" is really a tight turn. */
 const PUSHBACK_MAX_KT = 8
 /** Moving less than this between reports (meters) counts as standing still, for which way it faces. */

@@ -1,0 +1,85 @@
+/*
+ * A flag over the map (MapFlag.tsx), like a cockpit display's for a source it
+ * hasn't got: a red cross corner to corner, and a boxed amber caution in the
+ * middle that flashes a few times when it first appears.
+ */
+.map-flag {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(3 5 10 / 0.35);
+  /* The map underneath can still be moved about. */
+  pointer-events: none;
+  animation: map-flag-in 0.4s ease-out;
+  --tone: #ffb020;
+}
+
+.map-flag-cross {
+  position: absolute;
+  inset: 24px;
+  width: calc(100% - 48px);
+  height: calc(100% - 48px);
+}
+
+.map-flag-cross line {
+  stroke: #ff3b30;
+  stroke-width: 3;
+  opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.map-flag-box {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 12px 20px;
+  border: 2px solid var(--tone);
+  background: rgb(3 5 10 / 0.92);
+  color: var(--tone);
+  font: 500 12px / 1.2 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.map-flag-box {
+  animation: map-flag-flash 0.5s steps(1) 4;
+}
+
+.map-flag-box b {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.map-flag-detail {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+@keyframes map-flag-flash {
+  50% {
+    background: var(--tone);
+    color: #000;
+  }
+}
+
+@keyframes map-flag-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-flag,
+  .map-flag-box {
+    animation: none !important;
+  }
+}

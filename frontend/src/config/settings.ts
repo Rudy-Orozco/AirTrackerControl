@@ -198,6 +198,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           TERRAIN_SETTING,
           { path: 'MAP.terrainShading', label: 'Terrain shading', type: 'range', min: 0.1, max: 1.5, step: 0.05 },
           { path: 'MAP.ringSpacingNm', label: 'Range ring spacing', type: 'range', min: 5, max: 50, step: 5, unit: 'nm' },
+          { path: 'MAP.showCompass', label: 'Compass', hint: 'N, E, S and W in the corner', type: 'toggle' },
         ],
       },
       {
@@ -363,6 +364,7 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'MINIMAP.terrain', label: 'Terrain', hint: 'Hill shading', type: 'toggle' },
           { path: 'MINIMAP.terrainShading', label: 'Terrain shading', type: 'range', min: 0.1, max: 1.5, step: 0.05 },
           { path: 'MINIMAP.ringSpacingNm', label: 'Range ring spacing', type: 'range', min: 1, max: 50, step: 1, unit: 'nm' },
+          { path: 'MINIMAP.showCompass', label: 'Compass', hint: 'N, E, S and W in the corner', type: 'toggle' },
         ],
         action: { label: 'Reset position and size', run: () => resetMinimapPlacement() },
       },
@@ -408,6 +410,8 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: 'DIORAMA.enabled', label: 'Show', type: 'toggle' },
           LOCK_SETTING,
           { path: 'DIORAMA.showBox', label: 'Box outline', type: 'toggle' },
+          { path: 'DIORAMA.showCompass', label: 'Compass', hint: 'N, E, S and W, turning with the view', type: 'toggle' },
+          { path: 'DIORAMA.showWind', label: 'Wind vane', hint: 'Wind direction and speed from the METAR, under the caption', type: 'toggle' },
           { path: 'DIORAMA.boxHeight', label: 'Box height', type: 'range', min: 0.05, max: 0.5, step: 0.01 },
           { path: 'DIORAMA.buildingHeightScale', label: 'Building height', hint: 'Times real height', type: 'range', min: 1, max: 10, step: 0.5, unit: '×' },
         ],
@@ -446,6 +450,15 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
         title: 'Flights',
         settings: [
           { path: 'BOARD.rowsPerPage', label: 'Rows per page', type: 'range', min: 3, max: 15, step: 1 },
+          {
+            path: 'BOARD.towerRowsPerPage',
+            label: 'Rows per page, with minimap',
+            hint: 'Arrivals and departures stacked beside the minimap',
+            type: 'range',
+            min: 2,
+            max: 10,
+            step: 1,
+          },
           { path: 'BOARD.pageMs', label: 'Page time', type: 'range', min: 3000, max: 30_000, step: 1000, ...SECONDS },
           { path: 'BOARD.landedLingerMs', label: 'Keep landed flights', type: 'range', min: 0, max: 15 * 60_000, step: 60_000, ...MINUTES },
           { path: 'BOARD.approachNm', label: '"Approach" within', type: 'range', min: 2, max: 40, step: 1, unit: 'nm' },
@@ -477,6 +490,37 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
             },
             reload: true,
           },
+        ],
+      },
+      {
+        title: 'Display',
+        settings: [
+          {
+            path: 'MAP.fontFamily',
+            label: 'Font',
+            hint: 'For flight information: the board, map labels and panels',
+            type: 'select',
+            options: [
+              { value: '"JetBrains Mono Variable", ui-monospace, monospace', label: 'JetBrains Mono' },
+              { value: '"B612 Mono", ui-monospace, monospace', label: 'B612 Mono (Airbus cockpit displays)' },
+            ],
+          },
+          {
+            path: 'METAR.position',
+            label: 'Weather (METAR)',
+            type: 'select',
+            options: [
+              { value: 'board', label: 'Above the board, in a row' },
+              { value: 'corner', label: 'Top right, in a column' },
+            ],
+          },
+          {
+            path: 'METAR.spotlight',
+            label: 'Weather: one at a time',
+            hint: 'Top right: each reading in turn, with its part of the raw report highlighted',
+            type: 'toggle',
+          },
+          { path: 'METAR.spotlightMs', label: 'Each reading for', type: 'range', min: 2000, max: 15_000, step: 1000, ...SECONDS },
         ],
       },
       {
@@ -563,6 +607,12 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
             path: 'MOTION.taxiwaySnap',
             label: 'Keep ground traffic on taxiways',
             hint: 'Moving aircraft follow the taxiway and runway centerlines',
+            type: 'toggle',
+          },
+          {
+            path: 'MOTION.taxiwayRoutes',
+            label: 'Taxiways: follow routes',
+            hint: 'With the above: each move goes the shortest way along the lines, round corners, instead of to the nearest line',
             type: 'toggle',
           },
         ],

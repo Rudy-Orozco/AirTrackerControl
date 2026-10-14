@@ -142,3 +142,20 @@
     animation: none;
   }
 }
+
+/* Closed early: the progress bar in the flag over the map that takes its place. */
+.boot-flag-bar {
+  position: relative;
+  width: 240px;
+  max-width: 100%;
+  height: 3px;
+  margin: 4px 0 2px;
+  background: var(--line);
+}
+
+.boot-flag-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--tone);
+  transition: width 0.3s ease-out;
+}

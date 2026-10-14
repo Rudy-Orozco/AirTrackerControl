@@ -119,3 +119,256 @@
     padding: 0 0.8em;
   }
 }
+
+/* In the screen's top-right corner (METAR.position), under the toolbar buttons'
+   row, quiet like the airport stats: the category and the report's age, the raw
+   report, then the readings one a line, all against the right edge. On a
+   landscape screen, where the board runs down the right side, it sits just left
+   of the board's column instead (see .board's width and padding). */
+.metar--column {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  z-index: 2;
+  width: min(260px, calc(100vw - 32px));
+  margin: 0;
+  color: var(--text);
+  font: 500 13px / 1.2 var(--mono);
+  text-align: right;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.7);
+  pointer-events: none;
+}
+
+@media (min-aspect-ratio: 1/1) {
+  .metar--column {
+    /* Clear of the toolbar here, so right at the top, level with the airport logo. */
+    top: 12px;
+    right: calc(min(54vw, 880px, 65vh) - 10vw + 16px);
+  }
+}
+
+.metar-head {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0.8em;
+}
+
+.metar--column .metar-cat {
+  padding: 0;
+  font-size: 1em;
+}
+
+.metar--column .metar-age {
+  font-size: 0.75em;
+  letter-spacing: 0.08em;
+}
+
+.metar--column .metar-raw-text {
+  margin: 6px 0 10px;
+  font-size: 0.75em;
+  line-height: 1.45;
+  color: var(--text-dim);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.metar--column .metar-cells {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding-right: 8px;
+  border-right: 1px solid var(--line);
+}
+
+/* One reading a line, mirrored: value, label, icon, the columns lined up down the list. */
+.metar--column .metar-cell {
+  display: grid;
+  grid-template-columns: 1fr 5em 1.4em;
+  align-items: center;
+  column-gap: 8px;
+  padding: 0;
+  border: 0;
+}
+
+.metar--column .metar-icon {
+  order: 3;
+  width: 1.4em;
+  height: 1.4em;
+  margin: 0;
+  opacity: 0.6;
+}
+
+.metar--column .metar-label {
+  order: 2;
+  font-size: 0.6em;
+  letter-spacing: 0.16em;
+}
+
+.metar--column .metar-value {
+  order: 1;
+  font-size: 1em;
+}
+
+/* One at a time (METAR.spotlight): the reading's part of the raw report lights up... */
+.metar--column .metar-raw-text mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.16);
+  color: var(--text);
+  animation: metar-mark-in 0.5s ease-out;
+}
+
+@keyframes metar-mark-in {
+  from {
+    background: rgb(255 255 255 / 0);
+    color: inherit;
+  }
+}
+
+/* ...and under it the reading: label over value, with its icon large on the right.
+   They pop in one after the other: the icon, then the label, then the value. */
+.metar-spot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+}
+
+.metar-spot-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.metar-spot .metar-label {
+  /* Over the value (the list's mirrored order doesn't apply here). */
+  order: 0;
+  font-size: 0.6em;
+  letter-spacing: 0.16em;
+  animation: metar-slide-in 0.35s 0.1s ease-out both;
+}
+
+.metar-spot-value {
+  font-size: 1.6em;
+  font-weight: 600;
+  line-height: 1;
+  animation: metar-rise-in 0.4s 0.18s ease-out both;
+}
+
+.metar-spot-icon {
+  display: grid;
+  place-items: center;
+  width: 2.9em;
+  height: 2.9em;
+  border-left: 1px solid var(--line);
+  padding-left: 12px;
+}
+
+.metar-spot .metar-icon {
+  width: 2.6em;
+  height: 2.6em;
+  margin: 0;
+  opacity: 0.85;
+  /* A little overshoot, so it pops. */
+  animation: metar-pop-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes metar-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4) rotate(-12deg);
+  }
+}
+
+@keyframes metar-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes metar-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* At the end of its turn the reading plays out (SPOT_OUT_MS): the icon shrinks
+   away, the words drop and fade, and the highlight dims. */
+.is-leaving .metar-spot .metar-icon {
+  animation: metar-pop-out 0.3s ease-in both;
+}
+
+.is-leaving .metar-spot .metar-label,
+.is-leaving .metar-spot-value {
+  animation: metar-drop-out 0.3s ease-in both;
+}
+
+.is-leaving .metar-spot-value {
+  animation-delay: 0.05s;
+}
+
+.is-leaving .metar-raw-text mark {
+  animation: metar-mark-out 0.3s ease-in both;
+}
+
+@keyframes metar-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.5) rotate(10deg);
+  }
+}
+
+@keyframes metar-drop-out {
+  to {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+
+@keyframes metar-mark-out {
+  to {
+    background: rgb(255 255 255 / 0);
+    color: inherit;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metar-spot .metar-icon,
+  .metar-spot .metar-label,
+  .metar-spot-value,
+  .metar--column .metar-raw-text mark,
+  .is-leaving .metar-spot .metar-icon,
+  .is-leaving .metar-spot .metar-label,
+  .is-leaving .metar-spot-value,
+  .is-leaving .metar-raw-text mark {
+    animation: none;
+  }
+}
+
+/* Which reading it's on, of the six: the current one stretched into a dash. */
+.metar-spot-dots {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.metar-spot-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  transition:
+    width 0.3s ease-out,
+    background 0.3s;
+}
+
+.metar-spot-dots .is-on {
+  width: 14px;
+  background: var(--text-dim);
+}

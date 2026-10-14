@@ -1,5 +1,7 @@
 @import '@fontsource-variable/inter';
 @import '@fontsource-variable/jetbrains-mono';
+@import '@fontsource/b612-mono/400.css';
+@import '@fontsource/b612-mono/700.css';
 
 :root {
   --bg: #03050a;
@@ -8,7 +10,7 @@
   --text: #f1f3f6;
   --text-dim: rgba(220, 228, 240, 0.45);
   --error: #ff6b57;
-  /* Inter for headings and the clock; JetBrains Mono for flight information. */
+  /* Inter for headings and the clock; JetBrains Mono (or B612 Mono, see MAP.fontFamily) for flight information. */
   --sans: 'Inter Variable', system-ui, sans-serif;
   --mono: 'JetBrains Mono Variable', ui-monospace, monospace;
 }
@@ -74,4 +76,50 @@ body,
 
 .corner-stack > .aircraft-panel {
   pointer-events: auto;
+}
+
+/*
+ * The product's name, in the strip along the top kept clear for the toolbar
+ * buttons: in the top-right corner on a portrait screen, giving way while the
+ * buttons show; on a landscape screen at the top of the board's column, lined
+ * up with its content (see .board's width and padding), left of the buttons.
+ */
+.product-name {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  height: 58px;
+  font: 700 12px / 1 var(--sans);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.25s;
+}
+
+.app:has(.toolbar.is-shown) .product-name {
+  opacity: 0;
+}
+
+@media (hover: hover) {
+  .app:has(.toolbar:hover) .product-name {
+    opacity: 0;
+  }
+}
+
+@media (min-aspect-ratio: 1/1) {
+  .product-name {
+    right: auto;
+    left: calc(100vw - min(54vw, 880px, 65vh) + 10vw + 14px);
+  }
+
+  /* Beside the buttons, not under them: no need to give way. */
+  .app:has(.toolbar.is-shown) .product-name,
+  .app:has(.toolbar:hover) .product-name {
+    opacity: 1;
+  }
 }

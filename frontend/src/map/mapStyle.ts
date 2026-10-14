@@ -17,6 +17,7 @@ export type MapStyle = Pick<
   | 'terrain'
   | 'terrainShading'
   | 'ringSpacingNm'
+  | 'showCompass'
 > & { radar: { opacity: number } }
 
 let current: MapStyle = MAP

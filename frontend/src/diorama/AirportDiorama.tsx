@@ -10,12 +10,15 @@ import {
   fetchAirportLayout,
   renderDioramaBackground,
   type AirportLayout,
+  type DioramaWind,
   type DioramaView,
   type ViewAngle,
 } from './diorama'
 import type { GroundTracker } from '../tracking/groundTracker'
 import { LockIcon } from '../ui/icons'
-import { isDoubleTap, type Tap } from '../lib/touch'
+import { isDoubleTap, TAP_SLOP_PX, type Tap } from '../lib/touch'
+import { drawFocusBrackets, type Point } from '../map/renderer'
+import { selectAircraft, selectedAircraft } from '../tracking/selection'
 import {
   buttonsStyle,
   clamp,
@@ -29,6 +32,7 @@ import {
 } from '../lib/panel'
 import { LOCK_SETTING, RESET_DIORAMA_EVENT, setSetting, settingsVersion } from '../config/settings'
 import type { Tracker } from '../tracking/tracker'
+import { useMetar, type Metar } from '../weather/metar'
 import './AirportDiorama.css'
 
 interface Saved {
@@ -52,6 +56,8 @@ const SPIN_FRICTION_MS = 350
 const WHEEL_ZOOM = 1.08
 /** How long a touch shows the move and resize handles. */
 const TOUCH_REVEAL_MS = 4000
+/** How close (pixels) a click has to be to an aircraft to pick it. */
+const PICK_RADIUS_PX = 14
 
 type Corner = 'nw' | 'ne' | 'sw' | 'se'
 const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
@@ -64,8 +70,9 @@ const EDGES = ['top', 'right', 'bottom', 'left'] as const
  * low overhead. Like the main map, it draws outside React every frame.
  *
  * Drag inside to rotate and tilt (double-click resets the angle), drag the
- * caption strip to move it, and drag the corner handle to resize it. The
- * layout is remembered in this browser.
+ * caption strip to move it, and drag the corner handle to resize it. Click an
+ * aircraft to follow it, like on the maps (locked, that's all a click does).
+ * The layout is remembered in this browser.
  */
 export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: GroundTracker }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -79,6 +86,12 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
   const pointerOver = usePointerOverWhileLocked(containerRef, DIORAMA.locked)
   // Read by the animation loop, which rebuilds the scene when it changes.
   const angleRef = useRef<ViewAngle>(saved.angle)
+  // The latest wind, for the vane under the caption.
+  const metar = useMetar(AIRPORT_PRESET.icao)
+  const windRef = useRef<Omit<DioramaWind, 'since'> | null>(null)
+  windRef.current = DIORAMA.showWind && metar ? windOf(metar) : null
+  // Where each aircraft was drawn last frame, for clicking on one.
+  const hitsRef = useRef<{ hex: string; at: Point }[]>([])
 
   useEffect(() => {
     const canvas = canvasRef.current!
@@ -93,6 +106,8 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
     let builtAngle: ViewAngle | null = null
     let builtSettings = settingsVersion()
     let backdropMask = ''
+    // The wind shown, and when it came in (for the vane to swing round to it).
+    let wind: DioramaWind | null = null
 
     const rebuild = () => {
       if (!layout || !width || !height) return
@@ -146,9 +161,17 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
         const use3d = DIORAMA.models3d && models.available
         const poses = drawDioramaAircraft(ctx, view, ground.tracks.values(), tracker.tracks.values(), !use3d)
         drawDioramaFront(ctx, view)
-        drawDioramaCaption(ctx, view, caption(ground))
+        const latest = windRef.current
+        if (!latest) wind = null
+        else if (latest.label !== wind?.label) wind = { ...latest, since: now }
+        drawDioramaCaption(ctx, view, caption(ground), wind, now, DIORAMA.showCompass)
         models.render(view, use3d ? poses : [])
-      }
+        const hits = poses.map((p) => ({ hex: p.info.hex, at: view!.toScreen(p.at) }))
+        hitsRef.current = hits
+        const hex = selectedAircraft()
+        const focus = hex ? hits.find((h) => h.hex === hex) : null
+        if (focus) drawFocusBrackets(ctx, focus.at.x, focus.at.y)
+      } else hitsRef.current = []
       frame = requestAnimationFrame(loop)
     })
 
@@ -163,18 +186,18 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
   const save = (next: Partial<Saved>) => storeSaved({ placement, angle: angleRef.current, ...next })
 
   /** Runs `onMove` with the pointer's offset from where the drag started, until it's released. */
-  const drag = (e: ReactPointerEvent, onMove: (dx: number, dy: number) => void, onEnd: () => void) => {
+  const drag = (e: ReactPointerEvent, onMove: (dx: number, dy: number) => void, onEnd: (ev: PointerEvent) => void) => {
     e.preventDefault()
     e.stopPropagation()
     const target = e.currentTarget as HTMLElement
     target.setPointerCapture(e.pointerId)
     const [startX, startY] = [e.clientX, e.clientY]
     const move = (ev: PointerEvent) => onMove(ev.clientX - startX, ev.clientY - startY)
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       target.removeEventListener('pointermove', move)
       target.removeEventListener('pointerup', up)
       target.removeEventListener('pointercancel', up)
-      onEnd()
+      onEnd(ev)
     }
     target.addEventListener('pointermove', move)
     target.addEventListener('pointerup', up)
@@ -187,13 +210,46 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
     return { left: rect.left, top: rect.top, size: rect.width }
   }
 
+  /** The aircraft drawn nearest a point (client pixels), if close enough to count as clicked. */
+  const aircraftAt = (clientX: number, clientY: number) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    let best: string | null = null
+    let bestDistance = PICK_RADIUS_PX
+    for (const { hex, at } of hitsRef.current) {
+      const d = Math.hypot(at.x - (clientX - rect.left), at.y - (clientY - rect.top))
+      if (d < bestDistance) {
+        best = hex
+        bestDistance = d
+      }
+    }
+    return best
+  }
+
+  /** Picks the aircraft under a click or tap that didn't move, if there is one. */
+  const pickAt = (ev: PointerEvent, dx: number, dy: number) => {
+    if (ev.type !== 'pointerup' || Math.hypot(dx, dy) >= TAP_SLOP_PX) return
+    const hex = aircraftAt(ev.clientX, ev.clientY)
+    if (hex) selectAircraft(hex)
+  }
+
   /**
-   * Drag on the cube: rotate and tilt (right-drag or Shift+drag moves it instead).
-   * By touch: one finger rotates, two pinch to resize and drag to move, and a
-   * double tap resets the angle.
+   * Drag on the cube: rotate and tilt (right-drag or Shift+drag moves it instead);
+   * a click that doesn't move picks the aircraft under it. By touch: one finger
+   * rotates, two pinch to resize and drag to move, and a double tap resets the
+   * angle. Locked, it only picks aircraft.
    */
   const onCanvasPointerDown = (e: ReactPointerEvent) => {
     stopSpin()
+    if (DIORAMA.locked) {
+      if (e.button !== 0 || !e.isPrimary) return
+      let [lastX, lastY] = [0, 0]
+      drag(
+        e,
+        (dx, dy) => ([lastX, lastY] = [dx, dy]),
+        (ev) => pickAt(ev, lastX, lastY),
+      )
+      return
+    }
     if (e.pointerType !== 'mouse') {
       const fingers = touchesRef.current
       fingers.set(e.pointerId, { x: e.clientX, y: e.clientY })
@@ -207,7 +263,7 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
       window.addEventListener('pointercancel', lift)
       if (fingers.size === 2) return startPinch()
       if (fingers.size > 2) return
-      if (isDoubleTap(lastTapRef.current, e)) {
+      if (isDoubleTap(lastTapRef.current, e) && aircraftAt(e.clientX, e.clientY) === null) {
         lastTapRef.current = null
         resetAngle()
         e.preventDefault()
@@ -277,6 +333,7 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
     // Recent pointer samples, to carry on spinning at the release speed.
     const samples: { t: number; dx: number; dy: number }[] = []
     let pinched = false
+    let [lastX, lastY] = [0, 0]
     setRotating(true)
     drag(
       e,
@@ -286,13 +343,20 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
           pinched = true
           return
         }
+        ;[lastX, lastY] = [dx, dy]
         angleRef.current = turned(start, dx * degPerPx, dy * degPerPx)
         samples.push({ t: performance.now(), dx, dy })
         if (samples.length > 6) samples.shift()
       },
-      () => {
+      (ev) => {
         setRotating(false)
         if (pinched) return
+        // Barely moved: a click, not a turn.
+        if (Math.hypot(lastX, lastY) < TAP_SLOP_PX) {
+          angleRef.current = start
+          pickAt(ev, lastX, lastY)
+          return
+        }
         const [a, b] = [samples[0], samples[samples.length - 1]]
         const dt = b && a ? b.t - a.t : 0
         // Only a flick spins on: a release after holding still stops dead.
@@ -356,7 +420,7 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
 
   /** Scroll over the cube to grow or shrink it around its middle. Ctrl+scroll is left for page zoom. */
   const onWheel = (e: ReactWheelEvent) => {
-    if (e.ctrlKey || e.deltaY === 0) return
+    if (DIORAMA.locked || e.ctrlKey || e.deltaY === 0) return
     const start = currentPlacement()
     const size = clamp(start.size * (e.deltaY < 0 ? WHEEL_ZOOM : 1 / WHEEL_ZOOM), MIN_SIZE, maxPanelSize())
     const grow = (size - start.size) / 2
@@ -401,10 +465,17 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
         <canvas
           ref={canvasRef}
           onPointerDown={onCanvasPointerDown}
-          onDoubleClick={resetAngle}
+          onDoubleClick={(e) => !DIORAMA.locked && aircraftAt(e.clientX, e.clientY) === null && resetAngle()}
           onWheel={onWheel}
+          onPointerMove={(e) => {
+            if (e.pointerType === 'mouse' && e.buttons === 0) e.currentTarget.classList.toggle('is-over-aircraft', aircraftAt(e.clientX, e.clientY) !== null)
+          }}
           onContextMenu={(e) => e.preventDefault()}
-          title="Drag to rotate · right-drag or Shift+drag to move · scroll or pinch to resize · double-click or double-tap to reset"
+          title={
+            DIORAMA.locked
+              ? 'Click an aircraft to follow it'
+              : 'Drag to rotate · right-drag or Shift+drag to move · scroll or pinch to resize · double-click or double-tap to reset · click an aircraft to follow it'
+          }
         />
         <canvas ref={modelsRef} className="diorama-models" />
         {EDGES.map((edge) => (
@@ -446,6 +517,15 @@ function caption(ground: GroundTracker) {
     else taxiing++
   }
   return `${AIRPORT_PRESET.icao} SURFACE  ${taxiing} TAXIING · ${parked} PARKED`
+}
+
+/** The METAR's wind for the vane, or null if it doesn't report one. */
+function windOf({ wdir, wspd, wgst }: Metar): Omit<DioramaWind, 'since'> | null {
+  if (wspd === null) return null
+  if (wspd === 0) return { dir: null, speed: 0, gusting: false, label: 'WIND CALM' }
+  const dir = typeof wdir === 'number' ? wdir : null
+  const from = dir === null ? 'VRB' : `${String(dir).padStart(3, '0')}°`
+  return { dir, speed: wspd, gusting: !!wgst, label: `WIND ${from} ${wspd}${wgst ? `G${wgst}` : ''} KT` }
 }
 
 /**

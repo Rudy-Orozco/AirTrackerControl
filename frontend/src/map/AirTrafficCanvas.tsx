@@ -1,7 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { CENTER, MAP, VIEW_RADIUS_NM } from '../config/config'
 import { watchMapLayers, type MapLayers } from './mapLayers'
-import { createProjection, createView, drawAssistPaths, drawFocusBrackets, drawRunwayGuides, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
+import { createProjection, createView, drawAssistPaths, drawCompass, drawFocusBrackets, drawRunwayGuides, drawFocusRoute, drawTracks, labelFont, renderBackground, type Point } from './renderer'
 import { settingsVersion } from '../config/settings'
 import type { GroundTracker } from '../tracking/groundTracker'
 import { locateAircraft, routeOf, selectAircraft, selectedAircraft } from '../tracking/selection'
@@ -18,7 +18,8 @@ import './AirTrafficCanvas.css'
  * `overlay` is the board drawn on top of the map; the map centers itself in the
  * area the board leaves uncovered.
  *
- * Drag to pan the map; double-click to put the airport back in the middle.
+ * Drag to pan the map, scroll or pinch to zoom in and out around the pointer;
+ * double-click to put the airport back in the middle at the starting zoom.
  * Click an aircraft (or pick one on the board) to follow it in the middle of the
  * map until it's let go, when the map slides back to where it was.
  */
@@ -51,8 +52,18 @@ export function AirTrafficCanvas({
     let baseView = view
     // The part of the map the board leaves uncovered, from the top-left corner.
     let visible = { width: 1, height: 1 }
-    // The pan the background was last drawn at; drawn shifted while the map slides along after an aircraft.
+    // How far zoomed in (1 = VIEW_RADIUS_NM across the uncovered area), and when it last changed.
+    let zoom = 1
+    let zoomedAt = 0
+    // Two fingers on the map: their spread zooms and their midpoint pans.
+    const touches = new Map<number, Point>()
+    let pinch: { startDist: number; startZoom: number; mid: Point } | null = null
+    // After a pinch, the finger left down doesn't start a drag (or count as a tap).
+    let pinched = false
+    // The pan and view the background was last drawn at; drawn shifted and scaled while the map
+    // slides along after an aircraft, or zooms.
     let bakedPan = pan
+    let bakedView = view
     let bakedAt = 0
     // Where the map was panned before following an aircraft, to slide back to after.
     let home: { x: number; y: number } | null = null
@@ -60,14 +71,19 @@ export function AirTrafficCanvas({
     // Where each aircraft was drawn last frame, for clicking on one.
     let hits: { hex: string; at: Point }[] = []
 
-    /** Rebuilds the view and projection from the size and the pan. */
+    /** The centered view for the current size, at the current zoom (before panning). */
+    const zoomedView = () => ({ ...baseView, pxPerNm: baseView.pxPerNm * zoom })
+
+    /** Rebuilds the view and projection from the size, the zoom and the pan. */
     const placeView = () => {
-      view = { ...baseView, cx: baseView.cx + pan.x, cy: baseView.cy + pan.y }
+      const z = zoomedView()
+      view = { ...z, cx: z.cx + pan.x, cy: z.cy + pan.y }
       project = createProjection(view, CENTER)
     }
 
     const redrawBackground = () => {
       bakedPan = pan
+      bakedView = view
       bakedAt = performance.now()
       background = renderBackground(width, height, dpr, view, project, layers.basemap, layers.radar, layers.terrain)
     }
@@ -104,16 +120,32 @@ export function AirTrafficCanvas({
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return
       canvas.setPointerCapture(e.pointerId)
+      if (e.pointerType !== 'mouse') {
+        touches.set(e.pointerId, local(e))
+        if (touches.size === 2) return startPinch()
+        if (touches.size > 2) return
+      }
+      pinched = false
       dragging = { startX: e.clientX, startY: e.clientY, dx: 0, dy: 0 }
       canvas.classList.add('is-dragging')
     }
     const onPointerMove = (e: PointerEvent) => {
+      if (touches.has(e.pointerId)) touches.set(e.pointerId, local(e))
+      if (pinch) return movePinch()
       if (!dragging) return
       dragging.dx = e.clientX - dragging.startX
       dragging.dy = e.clientY - dragging.startY
     }
     const onPointerUp = (e: PointerEvent) => {
-      if (!dragging) return
+      touches.delete(e.pointerId)
+      if (pinch) {
+        if (touches.size < 2) {
+          pinch = null
+          redrawBackground()
+        }
+        return
+      }
+      if (!dragging || pinched) return
       const tapped = Math.hypot(dragging.dx, dragging.dy) < TAP_SLOP_PX
       // While following, the aircraft holds the map in place.
       if (!home) pan = { x: pan.x + dragging.dx, y: pan.y + dragging.dy }
@@ -140,8 +172,65 @@ export function AirTrafficCanvas({
     const onDoubleClick = () => {
       if (home) return
       pan = { x: 0, y: 0 }
+      zoom = 1
       placeView()
       redrawBackground()
+    }
+
+    /** A pointer's position on the canvas. */
+    const local = (e: { clientX: number; clientY: number }): Point => {
+      const rect = canvas.getBoundingClientRect()
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    }
+
+    /**
+     * Zooms by `factor` keeping the map under `anchor` (canvas pixels) where it is;
+     * following an aircraft, around the aircraft instead, so it stays in the middle.
+     */
+    const zoomBy = (factor: number, anchor: Point) => {
+      const next = Math.min(Math.max(zoom * factor, MIN_ZOOM), MAX_ZOOM)
+      const k = next / zoom
+      if (k === 1) return
+      const around = home ? { x: baseView.cx, y: baseView.cy } : anchor
+      const center = { x: around.x - (around.x - view.cx) * k, y: around.y - (around.y - view.cy) * k }
+      zoom = next
+      pan = { x: center.x - baseView.cx, y: center.y - baseView.cy }
+      // Where to slide back to after following, at the new zoom.
+      if (home) home = { x: home.x * k, y: home.y * k }
+      zoomedAt = performance.now()
+      placeView()
+    }
+
+    /** Scroll (or a trackpad pinch, which arrives as Ctrl+scroll) zooms around the pointer. */
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      if (dragging || pinch) return
+      const pixels = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? height : 1)
+      // A trackpad pinch sends small steps: zoom faster per pixel so it keeps up with the fingers.
+      zoomBy(Math.exp(-pixels * (e.ctrlKey ? WHEEL_PINCH_ZOOM : WHEEL_ZOOM)), local(e))
+    }
+
+    const startPinch = () => {
+      // The first finger's drag so far stays; from here on the two fingers move the map.
+      if (dragging && !home) pan = { x: pan.x + dragging.dx, y: pan.y + dragging.dy }
+      dragging = null
+      canvas.classList.remove('is-dragging')
+      placeView()
+      const [a, b] = [...touches.values()]
+      pinch = { startDist: Math.max(Math.hypot(b.x - a.x, b.y - a.y), 1), startZoom: zoom, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+      pinched = true
+      lastTap = null
+    }
+    const movePinch = () => {
+      if (!pinch || touches.size < 2) return
+      const [a, b] = [...touches.values()]
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+      if (!home) {
+        pan = { x: pan.x + mid.x - pinch.mid.x, y: pan.y + mid.y - pinch.mid.y }
+        placeView()
+      }
+      pinch.mid = mid
+      zoomBy((pinch.startZoom * Math.hypot(b.x - a.x, b.y - a.y)) / pinch.startDist / zoom, mid)
     }
     /** The aircraft drawn nearest a point (client pixels), if close enough to count as clicked. */
     const aircraftAt = (clientX: number, clientY: number) => {
@@ -173,7 +262,7 @@ export function AirTrafficCanvas({
       let goal: { x: number; y: number } | null = null
       if (focus) {
         home ??= pan
-        const at = createProjection(baseView, CENTER)(focus.pos)
+        const at = createProjection(zoomedView(), CENTER)(focus.pos)
         goal = { x: baseView.cx - at.x, y: baseView.cy - at.y }
       } else if (home) {
         goal = home
@@ -201,6 +290,7 @@ export function AirTrafficCanvas({
     canvas.addEventListener('pointerup', onPointerUp)
     canvas.addEventListener('pointercancel', onPointerUp)
     canvas.addEventListener('dblclick', onDoubleClick)
+    canvas.addEventListener('wheel', onWheel, { passive: false })
 
     // Ring spacing, radar opacity and label size are baked into the background.
     let builtSettings = settingsVersion()
@@ -212,17 +302,22 @@ export function AirTrafficCanvas({
       tracker.step(now)
       ground.step(now)
       const focus = follow(now)
-      // How far the map has moved since the background was drawn: by a drag, or following an aircraft.
+      // Zooming: redraw the background once it settles (each step would be slow with big basemaps).
+      if (view.pxPerNm !== bakedView.pxPerNm && !pinch && now - zoomedAt > ZOOM_SETTLE_MS) redrawBackground()
+      // How far the map has moved and zoomed since the background was drawn: by a drag, a zoom,
+      // or following an aircraft.
       const drag = dragging && !home ? { x: dragging.dx, y: dragging.dy } : { x: 0, y: 0 }
-      const dx = pan.x + drag.x - bakedPan.x
-      const dy = pan.y + drag.y - bakedPan.y
+      const shown = { ...view, cx: view.cx + drag.x, cy: view.cy + drag.y }
+      const k = shown.pxPerNm / bakedView.pxPerNm
+      const dx = shown.cx - bakedView.cx * k
+      const dy = shown.cy - bakedView.cy * k
       let drawn = project
-      if (dx || dy) {
-        // Slide the cached background; what it doesn't cover yet is plain backdrop.
+      if (dx || dy || k !== 1) {
+        // Slide and scale the cached background; what it doesn't cover yet is plain backdrop.
         ctx.fillStyle = BACKDROP
         ctx.fillRect(0, 0, width, height)
-        ctx.drawImage(background, dx, dy, width, height)
-        drawn = createProjection({ ...view, cx: view.cx + drag.x, cy: view.cy + drag.y }, CENTER)
+        ctx.drawImage(background, dx, dy, width * k, height * k)
+        drawn = createProjection(shown, CENTER)
       } else {
         ctx.drawImage(background, 0, 0, width, height)
       }
@@ -256,6 +351,8 @@ export function AirTrafficCanvas({
         const at = drawn(focus.pos)
         drawFocusBrackets(ctx, at.x, at.y)
       }
+      // In the bottom-left corner of the part the board leaves uncovered.
+      if (MAP.showCompass) drawCompass(ctx, COMPASS_INSET, visible.height - COMPASS_INSET, COMPASS_RADIUS)
       frame = requestAnimationFrame(loop)
     })
 
@@ -269,14 +366,27 @@ export function AirTrafficCanvas({
       canvas.removeEventListener('pointerup', onPointerUp)
       canvas.removeEventListener('pointercancel', onPointerUp)
       canvas.removeEventListener('dblclick', onDoubleClick)
+      canvas.removeEventListener('wheel', onWheel)
     }
   }, [tracker, ground, overlay])
 
-  return <canvas ref={canvasRef} className="radar map2d" title="Drag to move the map · double-click to recenter · click an aircraft to follow it" />
+  return <canvas ref={canvasRef} className="radar map2d" title="Drag to move the map · scroll or pinch to zoom · double-click to recenter · click an aircraft to follow it" />
 }
 
 /** How close (pixels) a click has to be to an aircraft to pick it. */
 const PICK_RADIUS_PX = 20
+/** The compass rose's ring, and how far its middle sits in from the corner (room for the letters). */
+const COMPASS_RADIUS = 16
+const COMPASS_INSET = 44
+/** How far the map zooms in and out from where it starts (times VIEW_RADIUS_NM's scale). */
+const MIN_ZOOM = 0.5
+const MAX_ZOOM = 40
+/** Zoom per pixel scrolled: a mouse wheel notch (about 100 px) zooms about 1.2×... */
+const WHEEL_ZOOM = 0.0018
+/** ...and a trackpad pinch (Ctrl+scroll) faster, to keep up with the fingers. */
+const WHEEL_PINCH_ZOOM = 0.01
+/** After zooming stops for this long (ms), the background is redrawn sharp at the new scale. */
+const ZOOM_SETTLE_MS = 150
 /** Time constant (ms) of the map's slide toward a followed aircraft, and back. */
 const FOLLOW_EASE_MS = 180
 /** While following, the background is redrawn at least this often (ms) as the map slides. */

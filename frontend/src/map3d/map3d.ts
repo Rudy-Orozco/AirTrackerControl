@@ -1448,10 +1448,16 @@ export class Map3D {
     // Kept clear of the board, in the part of the screen it leaves uncovered (see resize).
     const at = lastOnScreen(screen, this.width * (1 + this.shift.x), this.height * (1 - this.shift.y), 40)
     if (!at) return
+    // Where the line leaves the screen right by the aircraft (behind the tail, an arrival's runs back
+    // past the camera), the label would sit on it, jumping about as the camera moves: fade it out there.
+    const clear = Math.hypot(at.x - screen[0].x, at.y - screen[0].y)
+    const fade = Math.min(Math.max((clear - ROUTE_LABEL_CLEAR_PX) / ROUTE_LABEL_CLEAR_PX, 0), 1)
+    if (fade <= 0) return
     const ctx = this.labels
     const color = MAP3D.traffic[route.kind].color
     const right = at.x > (this.width * (1 + this.shift.x)) / 2
     ctx.save()
+    ctx.globalAlpha = fade
     ctx.fillStyle = color
     if (at === screen[pos.count - 1]) {
       ctx.beginPath()
@@ -2555,3 +2561,6 @@ function smooth<T extends { x: number; y: number; z: number }>(points: T[], radi
     return { ...p, x: x / n, y: y / n, z: z / n }
   })
 }
+
+/** The followed flight's route label fades out within this many pixels (twice this, fully shown) of the aircraft on screen. */
+const ROUTE_LABEL_CLEAR_PX = 40

@@ -3,7 +3,7 @@ import { CENTER, MINIMAP } from '../config/config'
 import { MINIMAP_LOCK_SETTING, MINIMAP_TOWER_LOCK_SETTING, RESET_MINIMAP_EVENT, setSetting, settingsVersion } from '../config/settings'
 import { watchMapLayers, type MapLayers } from '../map/mapLayers'
 import { withMapStyle } from '../map/mapStyle'
-import { createProjection, createView, drawAssistPaths, drawFocusBrackets, drawRunwayGuides, drawTracks, labelFont, renderBackground, type Point } from '../map/renderer'
+import { createProjection, createView, drawAssistPaths, drawCompass, drawFocusBrackets, drawRunwayGuides, drawTracks, labelFont, renderBackground, type Point } from '../map/renderer'
 import {
   buttonsStyle,
   clamp,
@@ -32,6 +32,9 @@ const WHEEL_ZOOM = 1.08
 const TOUCH_REVEAL_MS = 4000
 /** How close (pixels) a click has to be to an aircraft to pick it. */
 const PICK_RADIUS_PX = 14
+/** The compass rose's ring, and how far its middle sits in from the corner (room for the letters). */
+const COMPASS_RADIUS = 11
+const COMPASS_INSET = 28
 
 type Corner = 'nw' | 'ne' | 'sw' | 'se'
 const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
@@ -139,6 +142,8 @@ export function Minimap({ tracker, ground }: { tracker: Tracker; ground: GroundT
         const at = project(focus.pos)
         drawFocusBrackets(ctx, at.x, at.y)
       }
+      // Top-left, clear of the lock button (top-right).
+      if (MINIMAP.showCompass) withMapStyle(MINIMAP, () => drawCompass(ctx, COMPASS_INSET, COMPASS_INSET, COMPASS_RADIUS))
       frame = requestAnimationFrame(loop)
     })
 

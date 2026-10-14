@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { AIRPORT, AIRPORT_PRESET } from '../config/config'
 import type { BootState, BootStep } from '../feed/useAircraftFeed'
+import { MapFlag } from './MapFlag'
 import './BootScreen.css'
 
 /** How long a step that's taking longer than expected is guessed to still need. */
@@ -12,8 +13,12 @@ const FADE_MS = 600
  * Covers the map while the first aircraft are on their way, with each step, a
  * progress bar and the time remaining. In the delayed view that includes waiting
  * for every aircraft's second report, which takes a whole poll.
+ *
+ * Closed before then ("Show the map now"), a flag over the map takes its place
+ * until they arrive (see MapFlag): amber, with the red cross a cockpit display
+ * shows for a source it hasn't got, the step it's on and the progress.
  */
-export function BootScreen({ boot }: { boot: BootState }) {
+export function BootScreen({ boot, board }: { boot: BootState; board: RefObject<HTMLElement | null> }) {
   const [skipped, setSkipped] = useState(false)
   const [gone, setGone] = useState(false)
   const [shown, setShown] = useState({ fraction: 0, remainingMs: 0 })
@@ -25,10 +30,14 @@ export function BootScreen({ boot }: { boot: BootState }) {
   }, [boot])
 
   useEffect(() => {
-    if (hiding) {
-      const id = setTimeout(() => setGone(true), FADE_MS)
-      return () => clearTimeout(id)
-    }
+    if (!hiding) return
+    const id = setTimeout(() => setGone(true), FADE_MS)
+    return () => clearTimeout(id)
+  }, [hiding])
+
+  // Progress keeps counting after the screen's closed, for the flag.
+  useEffect(() => {
+    if (boot.done) return
     const update = () => {
       const { done, total } = progress(latest.current.steps, performance.now())
       const fraction = total > 0 ? Math.min(done / total, 0.99) : 0
@@ -38,53 +47,71 @@ export function BootScreen({ boot }: { boot: BootState }) {
     update()
     const id = setInterval(update, 100)
     return () => clearInterval(id)
-  }, [hiding])
-
-  if (gone) return null
+  }, [boot.done])
 
   const percent = boot.done ? 100 : Math.floor(shown.fraction * 100)
   const remainingS = Math.ceil(shown.remainingMs / 1000)
   // One step per report waited for beyond the first.
   const reports = boot.steps.length - 1
   const delayed = reports >= 2
+  // The step under way (or, between them, the last one finished).
+  const current = boot.steps.find((s) => stepState(s) === 'active') ?? boot.steps.findLast((s) => stepState(s) === 'done')
+
+  const flag = skipped && !boot.done && (
+    <MapFlag board={board}>
+      <b>{boot.error ? 'ADS-B DATA FAIL' : 'ADS-B ACQUIRING'}</b>
+      <span aria-live="polite">{boot.error ? 'Feed unavailable, retrying' : (current?.label ?? 'Starting')}</span>
+      <span className="boot-flag-bar" aria-hidden>
+        <i style={{ width: `${percent}%` }} />
+      </span>
+      <span className="map-flag-detail">
+        {percent}% · {remainingText(boot, remainingS)}
+      </span>
+    </MapFlag>
+  )
+
+  if (gone) return flag || null
 
   return (
-    <div className={`boot${hiding ? ' is-hiding' : ''}`}>
-      <div className="boot-card">
-        <div className="boot-title">
-          {AIRPORT} <span className="boot-airport">{AIRPORT_PRESET.name}</span>
-        </div>
-        <div className="boot-heading">Processing live traffic</div>
+    <>
+      {flag}
+      <div className={`boot${hiding ? ' is-hiding' : ''}`}>
+        <div className="boot-card">
+          <div className="boot-title">
+            {AIRPORT} <span className="boot-airport">{AIRPORT_PRESET.name}</span>
+          </div>
+          <div className="boot-heading">Processing live traffic</div>
 
-        <ol className="boot-steps" aria-live="polite">
-          {boot.steps.map((s) => (
-            <li key={s.label} className={`boot-step is-${stepState(s)}`}>
-              <span className="boot-step-mark" aria-hidden />
-              {s.label}
-            </li>
-          ))}
-        </ol>
+          <ol className="boot-steps" aria-live="polite">
+            {boot.steps.map((s) => (
+              <li key={s.label} className={`boot-step is-${stepState(s)}`}>
+                <span className="boot-step-mark" aria-hidden />
+                {s.label}
+              </li>
+            ))}
+          </ol>
 
-        <div className="boot-bar" aria-hidden>
-          <div className="boot-bar-fill" style={{ width: `${percent}%` }} />
-        </div>
-        <div className="boot-numbers">
-          <span>{percent}%</span>
-          <span>{remainingText(boot, remainingS)}</span>
-        </div>
+          <div className="boot-bar" aria-hidden>
+            <div className="boot-bar-fill" style={{ width: `${percent}%` }} />
+          </div>
+          <div className="boot-numbers">
+            <span>{percent}%</span>
+            <span>{remainingText(boot, remainingS)}</span>
+          </div>
 
-        {boot.error && <div className="boot-error">Feed unavailable ({boot.error}), retrying</div>}
-        {delayed && (
-          <p className="boot-note">
-            Delayed view: each aircraft appears once it has reported {reports === 3 ? 'three times' : 'twice'}, and the map
-            runs about {reports === 3 ? 'two updates' : 'one update'} behind live.
-          </p>
-        )}
-        <button className="boot-skip" onClick={() => setSkipped(true)}>
-          Show the map now
-        </button>
+          {boot.error && <div className="boot-error">Feed unavailable ({boot.error}), retrying</div>}
+          {delayed && (
+            <p className="boot-note">
+              Delayed view: each aircraft appears once it has reported {reports === 3 ? 'three times' : 'twice'}, and the map
+              runs about {reports === 3 ? 'two updates' : 'one update'} behind live.
+            </p>
+          )}
+          <button className="boot-skip" onClick={() => setSkipped(true)}>
+            Show the map now
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 

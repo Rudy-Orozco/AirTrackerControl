@@ -20,7 +20,16 @@ export interface FeedStatus {
   fetching: boolean
   /** Which network the aircraft came from (adsb.lol, or adsb.fi while adsb.lol is rate-limiting). */
   source: string
+  /** How long the last successful fetch took to come back, in ms. */
+  latencyMs: number | null
+  /** The average of that over the last PING_HISTORY successful fetches. */
+  avgLatencyMs: number | null
+  /** Whether each of the last PING_HISTORY polls succeeded, oldest first. */
+  history: boolean[]
 }
+
+/** How many recent polls the status keeps the outcome of. */
+export const PING_HISTORY = 20
 
 /** One step of getting the first aircraft on screen, for the startup screen. */
 export interface BootStep {
@@ -60,7 +69,7 @@ const EXPECTED_ROUTES_MS = 1500
  */
 export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
   const [feed, setFeed] = useState<Feed>({
-    status: { count: 0, updatedAt: null, error: null, nextPoll: null, fetching: false, source: aircraftSource() },
+    status: { count: 0, updatedAt: null, error: null, nextPoll: null, fetching: false, source: aircraftSource(), latencyMs: null, avgLatencyMs: null, history: [] },
     board: { arrivals: [], departures: [], landing: null, takeoff: null },
     stats: null,
     boot: { steps: [], done: false, error: null },
@@ -74,6 +83,18 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
     const board = new FlightBoard(stats)
     let timer: ReturnType<typeof setTimeout>
     let polls = 0
+    const history: boolean[] = []
+    const record = (ok: boolean) => {
+      history.push(ok)
+      if (history.length > PING_HISTORY) history.shift()
+      return [...history]
+    }
+    const latencies: number[] = []
+    const average = (ms: number) => {
+      latencies.push(ms)
+      if (latencies.length > PING_HISTORY) latencies.shift()
+      return latencies.reduce((sum, l) => sum + l, 0) / latencies.length
+    }
 
     // Startup: the first fetch and route lookup, then in the delayed view a second
     // fetch, since aircraft only appear once they've reported twice.
@@ -127,6 +148,7 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
           showBoot()
         }
         const aircraft = await fetchAircraft(controller.signal)
+        const latencyMs = performance.now() - pollStart
         if (booted === 0) {
           finish(0)
           showBoot()
@@ -150,7 +172,17 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
         const count = flights.filter((f) => !f.onGround).length
         const nextPoll = scheduleNext()
         setFeed({
-          status: { count, updatedAt: new Date(), error: null, nextPoll, fetching: false, source: aircraftSource() },
+          status: {
+            count,
+            updatedAt: new Date(),
+            error: null,
+            nextPoll,
+            fetching: false,
+            source: aircraftSource(),
+            latencyMs,
+            avgLatencyMs: average(latencyMs),
+            history: record(true),
+          },
           board: board.update(flights, Date.now()),
           stats: stats.update(flights, Date.now()),
           boot: bootState(null),
@@ -163,7 +195,8 @@ export function useAircraftFeed(tracker: Tracker, ground: GroundTracker): Feed {
         // Still starting up: the step in progress now waits for the retry as well.
         const current = steps[booted]
         if (current) current.expectedMs += nextPoll.delayMs
-        setFeed((f) => ({ ...f, status: { ...f.status, error, nextPoll, fetching: false }, boot: bootState(error) }))
+        const pings = record(false)
+        setFeed((f) => ({ ...f, status: { ...f.status, error, nextPoll, fetching: false, history: pings }, boot: bootState(error) }))
       }
     }
     poll()

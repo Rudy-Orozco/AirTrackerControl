@@ -607,5 +607,81 @@ export function lastOnScreen<T extends Point>(points: T[], width: number, height
   return last
 }
 
+/**
+ * A minimal compass marking north, east, south and west around (`x`, `y`): a
+ * thin ring of `radius` pixels with a tick at each, north's a small pointer.
+ * `dirOf` gives the screen direction (pixels per pixel of ring) of a compass
+ * bearing: straight up for north on a north-up map, or squashed and turned for
+ * one lying on a tilted floor. The letters always stand upright.
+ */
+export function drawCompass(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  dirOf: (deg: number) => Point = (deg) => ({ x: Math.sin((deg * Math.PI) / 180), y: -Math.cos((deg * Math.PI) / 180) }),
+) {
+  const at = (deg: number, r: number) => {
+    const d = dirOf(deg)
+    return { x: x + d.x * r, y: y + d.y * r }
+  }
+  ctx.save()
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 1
+  ctx.strokeStyle = COMPASS_RING
+  ctx.beginPath()
+  for (let deg = 0; deg <= 360; deg += 10) {
+    const p = at(deg, radius)
+    if (deg === 0) ctx.moveTo(p.x, p.y)
+    else ctx.lineTo(p.x, p.y)
+  }
+  ctx.stroke()
+  // Ticks in from the ring at east, south and west...
+  ctx.strokeStyle = COMPASS_TICK
+  ctx.beginPath()
+  for (const deg of [90, 180, 270]) {
+    const [a, b] = [at(deg, radius), at(deg, radius * 0.72)]
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+  }
+  ctx.stroke()
+  // ...and a slim pointer for north.
+  const [tip, left, right] = [at(0, radius), at(-14, radius * 0.5), at(14, radius * 0.5)]
+  ctx.fillStyle = COMPASS_NORTH
+  ctx.beginPath()
+  ctx.moveTo(tip.x, tip.y)
+  ctx.lineTo(left.x, left.y)
+  ctx.lineTo(right.x, right.y)
+  ctx.closePath()
+  ctx.fill()
+
+  // The letters just outside the ring, a fixed gap out from it whatever the tilt.
+  const size = Math.max(Math.round(radius * 0.5), 8)
+  ctx.font = `${size}px ${mapStyle().fontFamily}`
+  ctx.letterSpacing = '0px'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  for (const [deg, letter] of [
+    [0, 'N'],
+    [90, 'E'],
+    [180, 'S'],
+    [270, 'W'],
+  ] as const) {
+    const d = dirOf(deg)
+    const length = Math.hypot(d.x, d.y) || 1
+    const gap = size * 0.85
+    const p = at(deg, radius)
+    ctx.fillStyle = deg === 0 ? COMPASS_NORTH : COMPASS_LETTER
+    ctx.fillText(letter, p.x + (d.x / length) * gap, p.y + (d.y / length) * gap)
+  }
+  ctx.restore()
+}
+
+const COMPASS_RING = 'rgba(170, 195, 230, 0.28)'
+const COMPASS_TICK = 'rgba(170, 195, 230, 0.5)'
+const COMPASS_LETTER = 'rgba(190, 205, 230, 0.55)'
+const COMPASS_NORTH = 'rgba(241, 243, 246, 0.95)'
+
 /** How far in from the screen's edge a route's label stays. */
 const ROUTE_LABEL_MARGIN_PX = 40

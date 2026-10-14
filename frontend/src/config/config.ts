@@ -223,6 +223,11 @@ export const MOTION = {
   runwayAssist: true,
   /** Keep moving ground traffic on the taxiway and runway centerlines. Off: drawn as reported. */
   taxiwaySnap: true,
+  /**
+   * With taxiwaySnap: each move between updates goes the shortest way along the
+   * centerlines, round corners. Off: just pulled onto the nearest line.
+   */
+  taxiwayRoutes: true,
   /** How long a newly seen (or just took off) aircraft takes to fade in. */
   fadeInMs: 1000,
   /**
@@ -277,8 +282,11 @@ export const MAP = {
   labelLeaderLength: 28,
   /** Hide labels of background (white) traffic when there's no free spot; arrivals/departures always show. */
   hideCrowdedLabels: true,
-  /** Font for map labels; JetBrains Mono is bundled with the app (the board uses it too). */
-  fontFamily: '"JetBrains Mono Variable", ui-monospace, monospace',
+  /**
+   * Font for flight information: map labels, the board and the panels. Both are
+   * bundled with the app; B612 Mono is Airbus's open cockpit display font.
+   */
+  fontFamily: '"JetBrains Mono Variable", ui-monospace, monospace' as string,
 
 
   /** Show the lie of the land: hill shading on the 2D map, real relief on the 3D map. */
@@ -288,6 +296,8 @@ export const MAP = {
 
   /** Distance between the range rings, in nautical miles. */
   ringSpacingNm: 10,
+  /** A compass rose marking N, E, S and W in the bottom-left corner. */
+  showCompass: true,
 
   /**
    * Weather radar under the aircraft: NOAA MRMS, all NEXRAD radars merged and
@@ -387,11 +397,16 @@ export const MINIMAP = {
   labelSize: 10,
   labelLeaderLength: 16,
   hideCrowdedLabels: true,
-  fontFamily: MAP.fontFamily,
+  /** Follows the map's, which is the setting. */
+  get fontFamily() {
+    return MAP.fontFamily
+  },
   /** Hill shading, separate from the toolbar's terrain button. */
   terrain: false,
   terrainShading: 0.8,
   ringSpacingNm: 5,
+  /** A compass rose marking N, E, S and W in the top-left corner. */
+  showCompass: true,
   /** The 2D map's weather radar (when it's on), this opaque; 0 hides it. */
   radar: { opacity: 0.25 },
   showRunwayGuides: true,
@@ -408,6 +423,10 @@ export const DIORAMA = {
   locked: false,
   /** Draw the outline of the box around the airport. */
   showBox: true,
+  /** A wind vane (from the METAR) under the caption. */
+  showWind: true,
+  /** A compass rose marking N, E, S and W beside the caption, lying on the floor and turning with the view. */
+  showCompass: true,
   /** Blur the map behind the 3D view by this many pixels (0 = off), fading out toward its edges... */
   backdropBlur: 0,
   /** ...and/or darken it with a soft gradient this opaque in the middle (0 = off). */
@@ -522,6 +541,11 @@ export const PROCEDURES = {
 export const METAR = {
   /** METARs are issued hourly (plus specials when weather changes); checking every 5 minutes catches both. */
   refreshMs: 5 * 60_000,
+  /** Above the board in a row, or a column in the screen's top-right corner. */
+  position: 'board' as 'board' | 'corner',
+  /** In the corner: one reading at a time, with its part of the raw report highlighted, each for this long. */
+  spotlight: false,
+  spotlightMs: 5000,
 }
 
 // ---- ATIS ---------------------------------------------------------------------------
@@ -537,6 +561,8 @@ export const ATIS = {
 
 export const BOARD = {
   rowsPerPage: 7,
+  /** With the minimap in the board, arrivals and departures are stacked beside it, with this many rows each. */
+  towerRowsPerPage: 5,
   /** How long each page stays up before flipping to the next. */
   pageMs: 8000,
   /** Keep landed flights on the arrivals board this long, like a real airport board. */

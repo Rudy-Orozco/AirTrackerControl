@@ -9,13 +9,19 @@ import { AirportLogo } from './ui/AirportLogo'
 import { AirportStats } from './ui/AirportStats'
 import { Board } from './board/Board'
 import { BootScreen } from './ui/BootScreen'
-import { AIRPORT, DIORAMA, MAP, STATS } from './config/config'
+import { FeedLost } from './ui/FeedLost'
+import { AIRPORT, DIORAMA, MAP, METAR, STATS } from './config/config'
 import { fetchAirportLayout } from './diorama/diorama'
 import { GroundTracker } from './tracking/groundTracker'
 import { useSettingsVersion } from './config/settings'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { Tracker } from './tracking/tracker'
+import { MetarStrip } from './weather/MetarStrip'
+import { ErrorBoundary } from './ui/ErrorBoundary'
 import { useAircraftFeed } from './feed/useAircraftFeed'
+
+/** The product's name, for now. */
+const PRODUCT_NAME = 'Air Tracker Control'
 
 export default function App() {
   const [tracker] = useState(() => new Tracker())
@@ -38,6 +44,10 @@ export default function App() {
   const boardRef = useRef<HTMLElement>(null)
   // Re-render on settings changes so the board and the 3D view toggle pick them up.
   useSettingsVersion()
+  // The font setting reaches the stylesheet's flight information (the map labels read it directly).
+  useEffect(() => {
+    document.documentElement.style.setProperty('--mono', MAP.fontFamily)
+  })
 
   return (
     <main className="app">
@@ -50,11 +60,18 @@ export default function App() {
       {DIORAMA.enabled && <AirportDiorama tracker={tracker} ground={ground} />}
       <AirportLogo />
       <Board board={board} status={status} ref={boardRef} />
+      <FeedLost status={status} board={boardRef} />
+      {METAR.position === 'corner' && (
+        <ErrorBoundary name="Weather (METAR)">
+          <MetarStrip layout="column" />
+        </ErrorBoundary>
+      )}
       <div className="corner-stack">
-        {STATS.enabled && <AirportStats stats={stats} tracker={tracker} />}
+        {STATS.enabled && <AirportStats stats={stats} tracker={tracker} airborne={status.count} />}
         <AircraftPanel tracker={tracker} ground={ground} board={board} />
       </div>
-      <BootScreen boot={boot} />
+      <BootScreen boot={boot} board={boardRef} />
+      <div className="product-name">{PRODUCT_NAME}</div>
       <SettingsPanel />
     </main>
   )

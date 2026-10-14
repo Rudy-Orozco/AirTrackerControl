@@ -35,6 +35,13 @@ export function AircraftPanel({ tracker, ground, board }: { tracker: Tracker; gr
   const cockpit = ride === 'cockpit'
   useTick(() => REFRESH_MS)
   const missingSince = useRef<number | null>(null)
+  // Riding along needs the 3D map: started from the 2D map, it goes back there after.
+  const from2d = useRef(false)
+  useEffect(() => {
+    if (ride || !from2d.current) return
+    from2d.current = false
+    if (MAP.view === '3d') setSetting(VIEW_SETTING, '2d')
+  }, [ride])
 
   useEffect(() => {
     if (!hex) return
@@ -75,7 +82,10 @@ export function AircraftPanel({ tracker, ground, board }: { tracker: Tracker; gr
             aria-pressed={ride === view}
             disabled={!located}
             onClick={() => {
-              if (ride !== view && MAP.view !== '3d') setSetting(VIEW_SETTING, '3d')
+              if (ride !== view && MAP.view !== '3d') {
+                from2d.current = true
+                setSetting(VIEW_SETTING, '3d')
+              }
               // Riding along takes over from the street.
               if (ride !== view) leaveStreetView()
               setRideView(ride === view ? null : view)

@@ -5,6 +5,11 @@ import './MetarIcons.css'
 /**
  * Small line icons for the weather readings, drawn in currentColor on a 24×24
  * grid. Wind and sky cover use the standard station-model symbols.
+ *
+ * Each one's moving part is set through a CSS variable or class, so the weather
+ * shown one reading at a time can play it in: the vane swinging round to the
+ * wind, the thermometer filling, the needle sweeping to the setting (see
+ * .metar-spot in MetarIcons.css).
  */
 
 function Icon({ children, label }: { children: ReactNode; label: string }) {
@@ -40,32 +45,22 @@ export function WindIcon({ wdir, wspd, wgst }: Metar) {
   }
 
   // Build the barbs for a staff pointing straight up, then rotate to the wind direction.
-  let knots = Math.round(wspd / 5) * 5
-  const marks: ReactNode[] = []
-  let y = 1.5
-  while (knots >= 50) {
-    marks.push(<path key={`p${y}`} d={`M12 ${y} L19 ${y + 1.5} L12 ${y + 3} Z`} className="filled" />)
-    y += 3.5
-    knots -= 50
-  }
-  while (knots >= 10) {
-    marks.push(<line key={`f${y}`} x1="12" y1={y} x2="19" y2={y - 2} />)
-    y += 2.5
-    knots -= 10
-  }
-  if (knots >= 5) {
-    // A lone half barb sits a little down the staff so it isn't mistaken for a full one.
-    if (marks.length === 0) y += 2.5
-    marks.push(<line key={`h${y}`} x1="12" y1={y} x2="15.5" y2={y - 1} />)
-  }
+  const marks = barbMarks(wspd).map((m) =>
+    m.kind === 'pennant' ? (
+      <path key={`p${m.y}`} d={`M12 ${m.y} L19 ${m.y + 1.5} L12 ${m.y + 3} Z`} className="filled" />
+    ) : m.kind === 'full' ? (
+      <line key={`f${m.y}`} x1="12" y1={m.y} x2="19" y2={m.y - 2} />
+    ) : (
+      <line key={`h${m.y}`} x1="12" y1={m.y} x2="15.5" y2={m.y - 1} />
+    ),
+  )
 
-  // Each streak takes this long to drift past: about 2.4 s in a breeze, down to 0.6 s in a gale.
-  const flowS = Math.min(Math.max(2.6 - wspd / 20, 0.6), 2.4)
+  const flowS = windFlowS(wspd)
   const flow = { '--wind-flow': `${flowS}s` } as CSSProperties
 
   return (
     <Icon label={`Wind from ${wdir}°`}>
-      <g transform={`rotate(${wdir} 12 12)`}>
+      <g className="wind-vane" style={{ '--wind-dir': `${wdir}deg` } as CSSProperties}>
         <line x1="12" y1="12" x2="12" y2="1.5" />
         {marks}
         {/* Downwind of the station (below the staff before rotating), where the icon is empty. */}
@@ -80,8 +75,43 @@ export function WindIcon({ wdir, wspd, wgst }: Metar) {
   )
 }
 
+/** A wind barb's marks down a staff pointing straight up from (12, 12) to (12, 1.5): pennant = 50 kt, full = 10 kt, half = 5 kt. */
+export interface BarbMark {
+  kind: 'pennant' | 'full' | 'half'
+  /** Where it meets the staff. */
+  y: number
+}
+
+/** The barb marks for `knots` of wind (also drawn by the 3D airport view's vane). */
+export function barbMarks(knots: number): BarbMark[] {
+  let left = Math.round(knots / 5) * 5
+  const marks: BarbMark[] = []
+  let y = 1.5
+  while (left >= 50) {
+    marks.push({ kind: 'pennant', y })
+    y += 3.5
+    left -= 50
+  }
+  while (left >= 10) {
+    marks.push({ kind: 'full', y })
+    y += 2.5
+    left -= 10
+  }
+  if (left >= 5) {
+    // A lone half barb sits a little down the staff so it isn't mistaken for a full one.
+    if (marks.length === 0) y += 2.5
+    marks.push({ kind: 'half', y })
+  }
+  return marks
+}
+
+/** How long (seconds) each streak takes to drift past: about 2.4 s in a breeze, down to 0.6 s in a gale. */
+export function windFlowS(knots: number) {
+  return Math.min(Math.max(2.6 - knots / 20, 0.6), 2.4)
+}
+
 /** Streak positions across the wind, and how far through the cycle each starts (so they don't move in step). */
-const STREAKS: [number, number][] = [
+export const STREAKS: [number, number][] = [
   [8.5, -0.55],
   [12, 0],
   [15.5, -0.3],
@@ -93,14 +123,16 @@ export function VisibilityIcon({ visib }: Metar) {
   if (miles < 3) {
     return (
       <Icon label="Reduced visibility">
-        <path d="M3 8h18M5 12h14M3 16h18" />
+        <path className="vis-fog" d="M3 8h18M5 12h14M3 16h18" />
       </Icon>
     )
   }
   return (
     <Icon label="Good visibility">
-      <path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12Z" />
-      <circle cx="12" cy="12" r="2.6" />
+      <g className="vis-eye">
+        <path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12Z" />
+        <circle cx="12" cy="12" r="2.6" />
+      </g>
     </Icon>
   )
 }
@@ -119,8 +151,8 @@ export function SkyCoverIcon({ clouds = [] }: Metar) {
     <Icon label={`Sky cover ${cover}`}>
       <circle cx="12" cy="12" r="8" />
       {(cover === 'VV' || cover === 'OVX') && <path d="M6.3 6.3l11.4 11.4M17.7 6.3L6.3 17.7" />}
-      {fraction === 1 && <circle cx="12" cy="12" r="8" className="filled" />}
-      {fraction > 0 && fraction < 1 && <path d={pieSlice(fraction)} className="filled" />}
+      {fraction === 1 && <circle cx="12" cy="12" r="8" className="filled sky-fill" />}
+      {fraction > 0 && fraction < 1 && <path d={pieSlice(fraction)} className="filled sky-fill" />}
     </Icon>
   )
 }
@@ -140,7 +172,8 @@ export function TemperatureIcon({ temp }: Metar) {
   return (
     <Icon label="Temperature">
       <path d="M10 14.5V4a2 2 0 0 1 4 0v10.5a4 4 0 1 1-4 0Z" />
-      <line x1="12" y1="17.5" x2="12" y2={top} className="thick" />
+      {/* Drawn from the bulb up, so it can fill like mercury rising. */}
+      <line x1="12" y1="17.5" x2="12" y2={top} pathLength={1} className="thick temp-level" />
       <circle cx="12" cy="17.5" r="1.8" className="filled" />
     </Icon>
   )
@@ -149,7 +182,7 @@ export function TemperatureIcon({ temp }: Metar) {
 export function DewpointIcon() {
   return (
     <Icon label="Dew point">
-      <path d="M12 3s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11Z" />
+      <path className="dew-drop" d="M12 3s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11Z" />
     </Icon>
   )
 }
@@ -162,7 +195,14 @@ export function AltimeterIcon({ altim }: Metar) {
     <Icon label="Altimeter">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 4.5v1.5M4.5 12H6M19.5 12H18M6.7 6.7l1 1M17.3 6.7l-1 1" />
-      <line x1="12" y1="12" x2="12" y2="6.5" transform={`rotate(${angle.toFixed(1)} 12 12)`} className="thick" />
+      <line
+        x1="12"
+        y1="12"
+        x2="12"
+        y2="6.5"
+        className="thick altimeter-needle"
+        style={{ '--needle': `${angle.toFixed(1)}deg` } as CSSProperties}
+      />
       <circle cx="12" cy="12" r="1.3" className="filled" />
     </Icon>
   )

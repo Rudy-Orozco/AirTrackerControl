@@ -10,10 +10,19 @@ import './AirportStats.css'
 /**
  * What's going on at the airport, in a few quiet lines under its logo:
  * landing and takeoff rates (per STATS.rateUnit, averaged over STATS.rateWindowMs),
- * aircraft inbound and waiting to leave, the runways in use, and any
+ * aircraft airborne, inbound and waiting to leave, the runways in use, and any
  * go-arounds or rejected takeoffs in the last hour.
  */
-export function AirportStats({ stats: fed, tracker }: { stats: AirportStatsState | null; tracker: Tracker }) {
+export function AirportStats({
+  stats: fed,
+  tracker,
+  airborne,
+}: {
+  stats: AirportStatsState | null
+  tracker: Tracker
+  /** Aircraft in the air in range. */
+  airborne: number
+}) {
   const now = useNow()
   const stats = useSinceReset(fed)
   // The runways in use change between updates, as aircraft line up and land.
@@ -65,7 +74,7 @@ export function AirportStats({ stats: fed, tracker }: { stats: AirportStatsState
         </p>
       )}
       <p>
-        <b>{stats.inbound}</b> inbound · <b>{stats.waiting}</b> waiting
+        <b>{airborne}</b> airborne · <b>{stats.inbound}</b> inbound · <b>{stats.waiting}</b> waiting
       </p>
       {(runways.landing.length > 0 || runways.departing.length > 0) && (
         <p>

@@ -28,6 +28,11 @@
   cursor: grabbing;
 }
 
+/* Over an aircraft: a click follows it. */
+.diorama canvas.is-over-aircraft {
+  cursor: pointer;
+}
+
 /* WebGL aircraft, over the 2D scene; drags pass through to it. */
 .diorama canvas.diorama-models {
   position: absolute;
@@ -276,9 +281,19 @@
   }
 }
 
-/* Locked: clicks go straight through to the map, and the handles stay hidden. */
+/* Locked: clicks go straight through to the map, and the handles stay hidden... */
 .diorama.is-locked {
   pointer-events: none;
+}
+
+/* ...except on the scene: it still answers clicks, to follow an aircraft. */
+.diorama.is-locked canvas:not(.diorama-models) {
+  pointer-events: auto;
+  cursor: default;
+}
+
+.diorama.is-locked canvas.is-over-aircraft {
+  cursor: pointer;
 }
 
 .diorama.is-locked .diorama-move,

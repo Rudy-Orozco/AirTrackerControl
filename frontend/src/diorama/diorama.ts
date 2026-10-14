@@ -3,8 +3,9 @@ import type { Line } from '../map/basemap'
 import { AIRPORT_PRESET, DIORAMA, MAP } from '../config/config'
 import type { Flight } from '../tracking/flights'
 import type { GroundTrack } from '../tracking/groundTracker'
-import type { Point } from '../map/renderer'
+import { drawCompass, type Point } from '../map/renderer'
 import type { LatLon, Track } from '../tracking/tracker'
+import { barbMarks, STREAKS, windFlowS } from '../weather/MetarIcons'
 
 /** Detailed airport layout, as written by scripts/build_airport_layout.py. */
 export interface AirportLayout {
@@ -140,6 +141,7 @@ export function createDioramaView(layout: AirportLayout, width: number, height: 
 const COLORS = {
   box: 'rgba(120, 160, 220, 0.3)',
   caption: 'rgba(160, 180, 215, 0.6)',
+  wind: 'rgba(205, 220, 240, 0.85)',
   apron: 'rgba(120, 145, 185, 0.13)',
   taxiway: 'rgba(150, 175, 215, 0.28)',
   runway: 'rgba(190, 205, 230, 0.6)',
@@ -254,12 +256,33 @@ export function drawDioramaFront(ctx: CanvasRenderingContext2D, view: DioramaVie
   drawBoxEdges(ctx, view, floorCorners(view), 'front')
 }
 
+/** The wind for the vane under the caption: from `dir` degrees (null if variable), at `speed` knots. */
+export interface DioramaWind {
+  dir: number | null
+  speed: number
+  gusting: boolean
+  /** e.g. "WIND 270° 12G20 KT" or "WIND CALM". */
+  label: string
+  /** When this reading came in (ms, animation-frame time), for the vane to swing round to it. */
+  since: number
+}
+
 /**
  * Writes `text` flat on the ground just outside a floor edge facing the
  * viewer, as if painted there. As the view rotates it moves to whichever
- * front edge is longest on screen, and always reads left to right.
+ * front edge is longest on screen, and always reads left to right. Under it,
+ * a wind vane (when `wind` is given) pointing the way the wind blows, and
+ * beside them a compass rose (with `compass`), both lying on the floor true to
+ * the compass as the view turns.
  */
-export function drawDioramaCaption(ctx: CanvasRenderingContext2D, view: DioramaView, text: string) {
+export function drawDioramaCaption(
+  ctx: CanvasRenderingContext2D,
+  view: DioramaView,
+  text: string,
+  wind: DioramaWind | null = null,
+  now = 0,
+  compass = false,
+) {
   const floor = floorCorners(view)
   // Of the (one or two) edges facing the viewer, the one longest on screen has the most room.
   const screenLength = (e: { a: Vec3; b: Vec3 }) => {
@@ -286,19 +309,191 @@ export function drawDioramaCaption(ctx: CanvasRenderingContext2D, view: DioramaV
   let [ux, uy] = [(a.x - o.x) / pxPerStep, (a.y - o.y) / pxPerStep]
   let [vx, vy] = [(n.x - o.x) / pxPerStep, (n.y - o.y) / pxPerStep]
   // Read left to right, with the letters standing up from the edge (not mirrored).
-  if (ux < 0) [ux, uy] = [-ux, -uy]
-  if (ux * vy - uy * vx < 0) [vx, vy] = [-vx, -vy]
+  // (Flipping an axis flips which way along or out of the edge it points, for the vane.)
+  let [flipAlong, flipOut] = [1, 1]
+  if (ux < 0) [ux, uy, flipAlong] = [-ux, -uy, -1]
+  if (ux * vy - uy * vx < 0) [vx, vy, flipOut] = [-vx, -vy, -1]
 
+  const fontPx = MAP.labelSize - 2
+  // The words stand up facing the viewer (not lying foreshortened on the floor), running along
+  // the edge: laid out on screen, in rows stepping straight down from it.
+  const down = { x: -uy, y: ux }
+  /** Draws `label` upright at `at` (screen pixels), turned to run along the edge. */
+  const upright = (label: string, at: Point, size: number, align: CanvasTextAlign, baseline: CanvasTextBaseline, color: string) => {
+    ctx.save()
+    ctx.transform(ux, uy, down.x, down.y, at.x, at.y)
+    ctx.font = `${size}px ${MAP.fontFamily}`
+    ctx.letterSpacing = '2px'
+    ctx.textAlign = align
+    ctx.textBaseline = baseline
+    ctx.globalAlpha = 1
+    ctx.fillStyle = color
+    ctx.fillText(label, 0, 0)
+    ctx.restore()
+  }
+  /** `along` pixels along the edge and `below` straight down from where it starts (the edge's middle). */
+  const onScreen = (along: number, below: number): Point => ({ x: o.x + ux * along + down.x * below, y: o.y + uy * along + down.y * below })
+  // The vane and compass lie flat on the floor. In this frame the floor is seen from above
+  // (uniformly scaled), so a compass direction on it is just its parts along and out of the edge.
+  const toFrame = (deg: number) => {
+    const rad = (deg * Math.PI) / 180
+    const [east, north] = [Math.sin(rad), Math.cos(rad)]
+    return { x: flipAlong * (east * along.x + north * along.y), y: flipOut * (east * out.x + north * out.y) }
+  }
+  // How much the floor is squashed going down the screen, and slanted sideways with it.
+  const squash = vx * down.x + vy * down.y
+  const slant = vx * ux + vy * uy
+
+  // The caption, the wind row under it (vane, then its reading), and the compass to their left,
+  // all centered together on the edge.
+  const r = WIND_VANE_SIZE_PX / 2
+  ctx.letterSpacing = '2px'
+  ctx.font = `${fontPx}px ${MAP.fontFamily}`
+  const captionWidth = ctx.measureText(text).width
+  ctx.font = `${fontPx + 1}px ${MAP.fontFamily}`
+  const labelWidth = wind ? ctx.measureText(wind.label).width : 0
+  const rowWidth = wind ? 2 * r + 8 + labelWidth : 0
+  // Below the caption, clear of it by the vane's height on screen.
+  const below = 6 + fontPx + 8 + r * squash
+  const bottom = wind ? below + r * squash : 6 + fontPx
+  const blockWidth = Math.max(captionWidth, rowWidth)
+  // The compass's ring plus its letters outside it, each side.
+  const compassReach = CAPTION_COMPASS_RADIUS + CAPTION_COMPASS_LETTERS
+  const shift = compass ? compassReach + CAPTION_COMPASS_GAP / 2 : 0
+  upright(text, onScreen(shift, 6), fontPx, 'center', 'top', COLORS.caption)
+  if (compass) {
+    const at = onScreen(shift - blockWidth / 2 - CAPTION_COMPASS_GAP - compassReach, (6 + bottom) / 2)
+    drawCompass(ctx, at.x, at.y, CAPTION_COMPASS_RADIUS, (deg) => {
+      const f = toFrame(deg)
+      return { x: f.x * ux + f.y * vx, y: f.x * uy + f.y * vy }
+    })
+  }
+  if (!wind) return
+
+  // The vane is the weather strip's wind icon (see MetarIcons.tsx).
+  const scale = WIND_VANE_SIZE_PX / 24
+  const vaneAlong = shift - rowWidth / 2 + r
+  // The same spot in the floor's frame.
+  const cy = below / squash
+  const cx = vaneAlong - cy * slant
+
+  // The icon's 24×24 grid, its staff pointing the way the wind comes from (swinging round to a new
+  // reading) and its x axis to the right of that, so it reads as it does in the weather strip.
+  const still = reducedMotion()
+  const swing = still || wind.dir === null ? 0 : settleSwing((now - wind.since) / WIND_SETTLE_MS)
+  const up = toFrame((wind.dir ?? 0) + swing)
+  const right = toFrame((wind.dir ?? 0) + swing + 90)
   ctx.save()
   ctx.transform(ux, uy, vx, vy, o.x, o.y)
-  ctx.font = `${MAP.labelSize - 2}px ${MAP.fontFamily}`
-  ctx.letterSpacing = '2px'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'top'
+  ctx.translate(cx, cy)
+  ctx.transform(right.x * scale, right.y * scale, -up.x * scale, -up.y * scale, 0, 0)
+  ctx.translate(-12, -12)
   ctx.globalAlpha = 1
-  ctx.fillStyle = COLORS.caption
-  ctx.fillText(text, 0, 6)
+  ctx.strokeStyle = ctx.fillStyle = COLORS.wind
+  ctx.lineWidth = 1.4
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  const circle = (radius: number, fill = false) => {
+    ctx.beginPath()
+    ctx.arc(12, 12, radius, 0, Math.PI * 2)
+    if (fill) ctx.fill()
+    else ctx.stroke()
+  }
+  const line = (x1: number, y1: number, x2: number, y2: number) => {
+    ctx.beginPath()
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(x2, y2)
+    ctx.stroke()
+  }
+  if (!wind.speed) {
+    // Calm: a double circle.
+    circle(2)
+    circle(5.5)
+  } else if (wind.dir === null) {
+    // Variable: a dashed ring slowly turning.
+    circle(2)
+    ctx.translate(12, 12)
+    ctx.rotate(still ? 0 : ((now / 12_000) % 1) * Math.PI * 2)
+    ctx.translate(-12, -12)
+    ctx.setLineDash([2.5, 2.5])
+    circle(8)
+  } else {
+    line(12, 12, 12, 1.5)
+    for (const m of barbMarks(wind.speed)) {
+      if (m.kind === 'pennant') {
+        ctx.beginPath()
+        ctx.moveTo(12, m.y)
+        ctx.lineTo(19, m.y + 1.5)
+        ctx.lineTo(12, m.y + 3)
+        ctx.closePath()
+        ctx.fill()
+      } else if (m.kind === 'full') line(12, m.y, 19, m.y - 2)
+      else line(12, m.y, 15.5, m.y - 1)
+    }
+    // Streaks drift away downwind, faster the stronger it blows, swelling now and then in gusts.
+    const flowMs = windFlowS(wind.speed) * 1000
+    const gust = (now % 3200) / 3200
+    ctx.lineWidth = wind.gusting && !still ? 1.1 + 0.9 * gustSwell(gust) : 1.1
+    for (const [x, delay] of STREAKS) {
+      const t = still ? 0 : (((now / flowMs - delay) % 1) + 1) % 1
+      ctx.globalAlpha = still ? 0.5 : t < 0.3 ? (t / 0.3) * 0.75 : ((1 - t) / 0.7) * 0.75
+      line(x, 14.5 + 5 * t, x, 18 + 5 * t)
+    }
+    ctx.globalAlpha = 1
+    circle(2, true)
+  }
   ctx.restore()
+  upright(wind.label, onScreen(vaneAlong + r + 8, below), fontPx + 1, 'left', 'middle', COLORS.wind)
+}
+
+/** The compass rose beside the caption: its ring, room for its letters outside it, and the gap to the words (pixels). */
+const CAPTION_COMPASS_RADIUS = 14
+const CAPTION_COMPASS_LETTERS = 12
+const CAPTION_COMPASS_GAP = 10
+
+/** The wind vane's size on screen (pixels along the floor's front edge). */
+const WIND_VANE_SIZE_PX = 34
+/** How long (ms) the vane takes to swing round to a new reading, as in the weather strip. */
+const WIND_SETTLE_MS = 1600
+
+/** Degrees off the wind the vane points `t` (0 to 1) through settling: swinging past it and back (MetarIcons.css wind-settle). */
+function settleSwing(t: number) {
+  if (t >= 1) return 0
+  const keys: [number, number][] = [
+    [0, -90],
+    [0.35, 28],
+    [0.6, -12],
+    [0.8, 4],
+    [1, 0],
+  ]
+  const i = keys.findIndex(([at]) => at > t) - 1
+  const [[t0, a0], [t1, a1]] = [keys[Math.max(i, 0)], keys[Math.max(i, 0) + 1]]
+  return a0 + (a1 - a0) * settleEase((Math.max(t, 0) - t0) / (t1 - t0))
+}
+
+/** CSS cubic-bezier(0.25, 0.8, 0.4, 1), the easing between each of settleSwing's keyframes. */
+function settleEase(x: number) {
+  const [x1, y1, x2, y2] = [0.25, 0.8, 0.4, 1]
+  const bez = (t: number, a: number, b: number) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3
+  // Find where the curve's x is `x` by bisection, then read its y there.
+  let [lo, hi] = [0, 1]
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2
+    if (bez(mid, x1, x2) < x) lo = mid
+    else hi = mid
+  }
+  return bez((lo + hi) / 2, y1, y2)
+}
+
+/** How swollen the streaks are `t` (0 to 1) through a gust cycle (MetarIcons.css wind-gust). */
+function gustSwell(t: number) {
+  const ease = (x: number) => x * x * (3 - 2 * x)
+  if (t <= 0.6) return 0
+  return t < 0.75 ? ease((t - 0.6) / 0.15) : ease((1 - t) / 0.25)
+}
+
+function reducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 function floorCorners({ halfX, halfY }: DioramaView): Vec3[] {

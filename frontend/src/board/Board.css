@@ -3,10 +3,11 @@
   left: 0;
   right: 0;
   bottom: 0;
-  padding-top: 12vh;
+  /* A short fade up into the map. */
+  padding-top: 3vh;
   /* Text scales with the board's own width (cqi), so it fits either layout. */
   container-type: inline-size;
-  background: linear-gradient(to bottom, rgb(3 5 10 / 0), rgb(3 5 10 / 0.82) 7vh, rgb(3 5 10 / 0.95) 12vh);
+  background: linear-gradient(to bottom, rgb(3 5 10 / 0), rgb(3 5 10 / 0.82) 3vh, rgb(3 5 10 / 0.95) 5vh);
 }
 
 /* Landscape windows: the board floats over the right side instead. */
@@ -27,8 +28,9 @@
     padding-bottom: 8px;
     padding-left: 10vw;
     /* Clear at first, then a short fade, so the gradient doesn't reach far into the view. */
-    background: linear-gradient(to right, rgb(3 5 10 / 0) 7vw, rgb(3 5 10 / 0.6) 8.8vw, rgb(3 5 10 / 0.75) 10vw);
+    background: linear-gradient(to right, rgb(3 5 10 / 0) 8.5vw, rgb(3 5 10 / 0.6) 9.4vw, rgb(3 5 10 / 0.75) 10vw);
   }
+
 }
 
 .board-inner {
@@ -60,7 +62,7 @@
   gap: 0.6em;
 }
 
-/* Same small type as the footer. */
+/* Small type, like the footer's. */
 .board-airport small {
   font-size: 0.6em;
   letter-spacing: 0.1em;
@@ -106,6 +108,8 @@
 .panel {
   --accent: var(--arrival);
   min-width: 0;
+  /* Sideways swipes page the board; up and down still scroll. */
+  touch-action: pan-y;
 }
 
 .panel--departures {
@@ -147,8 +151,76 @@
 }
 
 .panel-header .panel-page {
+  display: flex;
+  align-items: baseline;
   font-weight: 500;
   color: var(--text-dim);
+}
+
+/* Page back and forward, either side of the page number, and the lock: folded
+   away to nothing, and opened while the board is hovered (with a mouse), tabbed
+   into, or for a few seconds after a tap on the header. */
+.panel-page button {
+  max-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    color 0.2s,
+    opacity 0.2s,
+    max-width 0.2s,
+    padding 0.2s;
+}
+
+@media (hover: hover) {
+  .panel:hover .panel-page button {
+    max-width: 2em;
+    padding: 0 0.35em;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.panel:has(:focus-visible) .panel-page button,
+.panel-page.is-revealed button {
+  max-width: 2em;
+  padding: 0 0.35em;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.panel-header .panel-page-number {
+  font-weight: inherit;
+  color: inherit;
+}
+
+.panel-lock svg {
+  width: 0.75em;
+  height: 0.85em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+/* Locked shows all the time, so it's clear why the board isn't moving. */
+.panel-page .panel-lock.is-locked {
+  max-width: 2em;
+  padding: 0 0.35em;
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--accent);
+}
+
+.panel-page button:hover,
+.panel-page button:focus-visible {
+  color: var(--text);
+  outline: none;
 }
 
 .panel-grid {
@@ -212,81 +284,177 @@
   position: relative;
   display: flex;
   justify-content: space-between;
+  align-items: flex-end;
+  gap: 1.5em;
   margin-top: 1.1em;
   padding: 0.7em 0 1.1em;
   border-top: 1px solid var(--line);
-  font-size: 0.6em;
+  font-size: 0.52em;
   letter-spacing: 0.1em;
   color: var(--text-dim);
+}
+
+/* Counting down to the boards paging by themselves again, across the footer's top border. */
+.board-resume {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--text);
+  transform-origin: left;
+  animation: meter-countdown linear both;
 }
 
 .board-footer .is-error {
   color: var(--error);
 }
 
-.board-status {
+.board-footer-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35em;
+  text-align: right;
+}
+
+/* Feed health: two hairlines (next fetch; latency, with its average marked), signal bars (recent polls) and their values in one line. */
+.feed-meter {
   display: flex;
   align-items: center;
-  gap: 0.7em;
+  gap: 0.8em;
 }
 
-/* Countdown to the next data fetch: the ring empties as it approaches. */
-.poll-timer {
-  width: 1.5em;
-  height: 1.5em;
-  transform: rotate(-90deg);
+.meter-bars {
+  display: flex;
+  flex-direction: column;
+  /* Room for the average's tick between the two. */
+  gap: 0.45em;
 }
 
-.poll-timer circle {
-  fill: none;
-  stroke-width: 2.5;
+.meter-values {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-.poll-timer-track {
-  stroke: var(--line);
+.meter-bar {
+  position: relative;
+  width: 6em;
+  height: 2px;
+  overflow: hidden;
+  background: var(--line);
 }
 
-.poll-timer-ring {
-  stroke: var(--text);
-  stroke-dasharray: 1;
-  animation: poll-countdown linear both;
+/* The average's tick reaches past the hairline. */
+.meter-bar:has(.meter-average) {
+  overflow: visible;
 }
 
-.is-error .poll-timer-ring {
-  stroke: var(--error);
+.meter-bar i {
+  position: absolute;
+  inset: 0;
+  background: var(--text-dim);
+  transform-origin: left;
 }
 
-/* A quarter arc going round while a request is on its way. */
-.poll-timer-spin {
-  stroke: var(--text);
-  stroke-dasharray: 0.25 0.75;
-  transform-origin: 10px 10px;
-  animation: poll-spin 0.9s linear infinite;
+/* Empties as the next fetch approaches. */
+.meter-countdown {
+  animation: meter-countdown linear both;
 }
 
-@keyframes poll-spin {
+.is-error .meter-countdown {
+  background: var(--error);
+}
+
+@keyframes meter-countdown {
+  from {
+    transform: scaleX(1);
+  }
   to {
-    transform: rotate(360deg);
+    transform: scaleX(0);
+  }
+}
+
+/* A short segment sliding across while a request is on its way. */
+.meter-bar .meter-sweep {
+  right: auto;
+  width: 30%;
+  animation: meter-sweep 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes meter-sweep {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(233%);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .poll-timer-spin {
+  .meter-bar .meter-sweep {
     animation-duration: 3s;
   }
 }
 
-@keyframes poll-countdown {
-  from {
-    stroke-dashoffset: 0;
-  }
-  to {
-    stroke-dashoffset: 1;
-  }
+/* Where the fetch time usually lands: a short red tick across the hairline. */
+.meter-average {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--error);
+  transition: left 0.4s ease-out;
 }
 
-/* Minimap in the board (its layout, or tower view): the board (alternating arrivals and departures) on the left and
-   the docked minimap's square slot on the right, under the weather. */
+.meter-fill {
+  transition: transform 0.4s ease-out;
+}
+
+.meter-bar .is-slow {
+  background: #ffcf4d;
+}
+
+.meter-bar .is-bad {
+  background: var(--error);
+}
+
+/* Signal bars, rising left to right; as many lit as the feed's strength, red at 1. */
+.meter-signal {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 0.9em;
+}
+
+.meter-signal i {
+  width: 3px;
+  background: var(--line);
+}
+
+.meter-signal i:nth-child(1) {
+  height: 40%;
+}
+
+.meter-signal i:nth-child(2) {
+  height: 70%;
+}
+
+.meter-signal i:nth-child(3) {
+  height: 100%;
+}
+
+.meter-signal.is-3 i,
+.meter-signal.is-2 i:nth-child(-n + 2) {
+  background: var(--text-dim);
+}
+
+.meter-signal.is-1 i:nth-child(1) {
+  background: var(--error);
+}
+
+/* Minimap in the board (its layout, or tower view): under the airport and clock, arrivals over departures on
+   the left and the docked minimap's slot on the right. */
 .board-tower {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -297,15 +465,10 @@
   min-width: 0;
 }
 
-/* Half the width: the airport's full name gives way to the clock. */
-.board-tower .board-airport {
-  min-width: 0;
-}
-
-.board-tower .board-airport small {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+/* Arrivals over departures, beside the minimap. */
+.board-stack {
+  display: grid;
+  gap: 1.1em;
 }
 
 /* The minimap is placed over it from script, filling it from the top of the

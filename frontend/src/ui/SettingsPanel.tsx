@@ -851,7 +851,9 @@ function updateText(s: UpdateStatus) {
   const running = `Version ${s.version}`
   switch (s.state) {
     case 'unavailable':
-      return `${running}. Only the copy the installer put in place updates itself, not this one (development, the zip or a local build).`
+      return s.installedAt
+        ? `${running}. This isn't the installed copy, so it doesn't update itself: open the one in ${s.installedAt}.`
+        : `${running}. Only the copy the installer put in place updates itself, not this one (development, the zip or a local build).`
     case 'checking':
       return `${running}. Checking for a new version…`
     case 'latest':

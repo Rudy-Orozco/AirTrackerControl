@@ -16,6 +16,7 @@
  */
 import { app, BrowserWindow, ipcMain, net, protocol, shell } from 'electron'
 import updater from 'electron-updater'
+import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -119,19 +120,41 @@ ipcMain.handle('update-status', () => updateStatus)
 ipcMain.handle('check-for-updates', () => checkForUpdates())
 
 /**
- * Whether this is the copy the installer put in place, the one an update
- * replaces. Any other (development, the zip, a local build in release/) would
- * install the update somewhere else and stay old itself, updating again at
- * every start. On Windows the installer leaves its uninstaller beside the app.
+ * Where the installer last installed the app (Windows), which is where an
+ * update goes, or null if it can't tell. Read from the uninstall entry Windows
+ * keeps for it.
+ */
+function registeredDir() {
+  try {
+    const uninstaller = readdirSync(path.dirname(process.execPath)).find((f) => /^Uninstall .*\.exe$/i.test(f))
+    if (!uninstaller) return null
+    for (const root of ['HKCU', 'HKLM']) {
+      let out
+      try {
+        out = execFileSync('reg', ['query', `${root}\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall`, '/s', '/f', uninstaller, '/d'], { encoding: 'utf8' })
+      } catch {
+        continue // Nothing found under this root.
+      }
+      const match = out.match(/UninstallString\s+REG_SZ\s+"([^"]+)"/)
+      if (match) return path.dirname(match[1])
+    }
+  } catch {
+    // Fall through.
+  }
+  return null
+}
+
+/**
+ * Whether this is the copy an update replaces: the one the installer last put
+ * in place. Any other (development, the zip, a local build in release/, or an
+ * older install in another folder) would install the update over that one
+ * instead and stay old itself, updating again at every start.
  */
 function installedCopy() {
-  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) return false
-  if (process.platform !== 'win32') return true
-  try {
-    return readdirSync(path.dirname(process.execPath)).some((f) => /^Uninstall .*\.exe$/i.test(f))
-  } catch {
-    return false
-  }
+  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) return { installed: false, installedAt: null }
+  if (process.platform !== 'win32') return { installed: true, installedAt: null }
+  const dir = registeredDir()
+  return { installed: dir !== null && path.relative(dir, path.dirname(process.execPath)) === '', installedAt: dir }
 }
 
 /**
@@ -140,8 +163,9 @@ function installedCopy() {
  * closed. Only in an installed copy: not in development or the portable zip.
  */
 function installUpdates() {
-  if (!installedCopy()) {
-    setUpdateStatus({ state: 'unavailable' })
+  const { installed, installedAt } = installedCopy()
+  if (!installed) {
+    setUpdateStatus({ state: 'unavailable', installedAt })
     return
   }
   const { autoUpdater } = updater

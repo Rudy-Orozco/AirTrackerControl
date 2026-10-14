@@ -26,6 +26,8 @@ export interface UpdateStatus {
   version: string
   /** The app file running, to tell an installed copy from another. */
   exe?: string
+  /** Where the installed copy is, when this isn't it (Windows). */
+  installedAt?: string | null
   /** The version being downloaded or installed. */
   next?: string
   percent?: number

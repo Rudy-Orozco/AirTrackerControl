@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type ProxyOptions } from 'vite'
 import { API_ROUTES } from './api-routes.mjs'
@@ -10,9 +11,19 @@ const apiProxy: Record<string, ProxyOptions> = Object.fromEntries(
   ]),
 )
 
+/** The commit this is built from, to tell builds apart (Settings › General › Updates). */
+function commit() {
+  try {
+    return execSync('git rev-parse --short HEAD').toString().trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  define: { __BUILD__: JSON.stringify({ commit: commit(), time: new Date().toISOString() }) },
   server: { proxy: apiProxy },
   preview: { proxy: apiProxy },
 })

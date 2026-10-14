@@ -3,7 +3,7 @@
   "productName": "AirTrackerControl",
   "description": "Live air traffic around an airport: map, 3D views and a split-flap arrivals/departures board.",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "electron/main.mjs",
   "type": "module",
   "scripts": {

@@ -815,6 +815,10 @@ function UpdatesGroup() {
     <section className="settings-group">
       <h3>Updates</h3>
       <p className="settings-note-line">{status ? updateText(status) : 'Loading…'}</p>
+      {/* Changes with every release, to see an update has landed. */}
+      <p className="settings-note-line">
+        Build {__BUILD__.commit} · {new Date(__BUILD__.time).toLocaleString()}
+      </p>
       {status?.state !== 'unavailable' && (
         <button type="button" className="settings-action" disabled={busy} onClick={() => desktop!.checkForUpdates().then(setStatus, () => {})}>
           {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}

@@ -39,7 +39,7 @@ def bounding_box(lat: float, lon: float, radius_nm: float) -> tuple[float, float
 def overpass(query: str) -> list[dict]:
     body = urllib.parse.urlencode({"data": query}).encode()
     # Overpass rejects requests without a User-Agent.
-    req = urllib.request.Request(OVERPASS_URL, data=body, headers={"User-Agent": "AirTrafficArt-basemap/0.1"})
+    req = urllib.request.Request(OVERPASS_URL, data=body, headers={"User-Agent": "AirTrackerControl-basemap/0.1"})
     with urllib.request.urlopen(req, timeout=180) as res:
         return json.load(res)["elements"]
 

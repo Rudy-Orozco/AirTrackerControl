@@ -331,3 +331,19 @@ From `frontend/`:
 | `npm run dist:linux` / `npm run dist:mac` | Linux AppImage / macOS disk image (build the Mac one on a Mac) |
 
 Packages land in `frontend/release/`. In the app: F11 toggles full screen, Ctrl+R reloads, Ctrl+Shift+I opens developer tools.
+
+### Releases and updates
+
+Installed copies update themselves from this repo's GitHub releases: a new
+version downloads in the background, installs quietly and the app restarts on
+its own (back in kiosk mode if it was in it). To publish one, from `frontend/`:
+
+```sh
+npm version patch        # bumps the version, commits and tags it (v0.1.1)
+git push --follow-tags   # the Release workflow builds the installer and publishes it
+```
+
+Only the installed app updates, not the portable zip or `npm run desktop`.
+Everything the page uses is bundled into `dist/`, so it's all in
+`devDependencies`; `dependencies` is only what the Electron main process needs
+at run time (shipped in the package).

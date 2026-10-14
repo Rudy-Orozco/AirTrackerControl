@@ -2,17 +2,42 @@
 .airport-stats {
   padding: 0 4px;
   color: var(--text-dim);
-  font: 500 11px / 1.6 var(--mono);
+  font: 500 11px / 1.7 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  opacity: 0.8;
+  opacity: 0.85;
   text-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
   /* Nothing to click: the map underneath still takes it. */
   pointer-events: none;
 }
 
-.airport-stats p {
+/* Labels in a narrow column on the left, values lined up beside them. */
+.airport-stats dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
   margin: 0;
+}
+
+.airport-stats dt {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  opacity: 0.7;
+}
+
+.airport-stats dd {
+  margin: 0;
+}
+
+/* The session's running totals, set slightly apart. */
+.airport-stats .is-session {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgb(255 255 255 / 0.08);
+}
+
+.airport-stats p {
+  margin: 4px 0 0;
 }
 
 .airport-stats b {

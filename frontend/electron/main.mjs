@@ -12,7 +12,9 @@
  *
  * Installed copies update themselves from the GitHub releases (see the publish
  * settings in package.json): a new version downloads in the background, then
- * the app installs it and restarts on its own, in kiosk mode if it was in it.
+ * the page counts down (UPDATE_COUNTDOWN_MS) to installing it, which can be put
+ * off UPDATE_DEFERS times, and the app restarts on its own, in kiosk mode if it
+ * was in it.
  */
 import { app, BrowserWindow, ipcMain, net, protocol, shell } from 'electron'
 import updater from 'electron-updater'
@@ -35,6 +37,11 @@ const MIN_ZOOM = -5.5
 const MAX_ZOOM = 6
 /** How often to look for a new release. */
 const UPDATE_CHECK_MS = 60 * 60_000
+/** Once one has downloaded: how long the page counts down before installing it... */
+const UPDATE_COUNTDOWN_MS = 30_000
+/** ...how many times it can be put off, and for how long each time. */
+const UPDATE_DEFERS = 3
+const UPDATE_DEFER_MS = 15 * 60_000
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -98,8 +105,9 @@ function takeRelaunchState() {
 /**
  * Where updating has got to, for the settings' Updates section (see
  * electron/preload.cjs): state is 'unavailable' (not an installed copy),
- * 'idle', 'checking', 'latest', 'downloading' (with percent), 'installing' or
- * 'error' (with message).
+ * 'idle', 'checking', 'latest', 'downloading' (with percent), 'ready' (counting
+ * down to installAt, with defersLeft), 'deferred' (until promptAt), 'installing'
+ * or 'error' (with message).
  */
 let updateStatus = { state: 'idle', version: app.getVersion(), exe: process.execPath }
 
@@ -110,7 +118,7 @@ function setUpdateStatus(status) {
 
 /** Looks for a new release (it downloads by itself if there is one). */
 async function checkForUpdates() {
-  if (updateStatus.state === 'unavailable' || updateStatus.state === 'downloading' || updateStatus.state === 'installing') return updateStatus
+  if (['unavailable', 'downloading', 'ready', 'deferred', 'installing'].includes(updateStatus.state)) return updateStatus
   setUpdateStatus({ state: 'checking' })
   await updater.autoUpdater.checkForUpdates().catch(() => {})
   return updateStatus
@@ -118,6 +126,41 @@ async function checkForUpdates() {
 
 ipcMain.handle('update-status', () => updateStatus)
 ipcMain.handle('check-for-updates', () => checkForUpdates())
+ipcMain.handle('install-update', () => installUpdateNow())
+ipcMain.handle('defer-update', () => deferUpdate())
+
+/** Times the countdown to installing, or the end of a deferral. */
+let installTimer = null
+let defersLeft = UPDATE_DEFERS
+
+/** A downloaded update: the page shows a countdown, and it installs at the end unless put off. */
+function promptInstall(version) {
+  clearTimeout(installTimer)
+  setUpdateStatus({ state: 'ready', next: version, installAt: Date.now() + UPDATE_COUNTDOWN_MS, defersLeft })
+  installTimer = setTimeout(installUpdateNow, UPDATE_COUNTDOWN_MS)
+}
+
+/** Installs the downloaded update quietly and starts the app again. */
+async function installUpdateNow() {
+  if (updateStatus.state !== 'ready' && updateStatus.state !== 'deferred') return updateStatus
+  clearTimeout(installTimer)
+  console.log(`Installing ${updateStatus.next} and restarting`)
+  setUpdateStatus({ state: 'installing', next: updateStatus.next })
+  await writeFile(relaunchFile(), JSON.stringify({ kiosk: KIOSK })).catch(() => {})
+  updater.autoUpdater.quitAndInstall(true, true)
+  return updateStatus
+}
+
+/** Puts the countdown off for UPDATE_DEFER_MS, while there are deferrals left. */
+function deferUpdate() {
+  if (updateStatus.state !== 'ready' || defersLeft <= 0) return updateStatus
+  clearTimeout(installTimer)
+  defersLeft--
+  const version = updateStatus.next
+  setUpdateStatus({ state: 'deferred', next: version, promptAt: Date.now() + UPDATE_DEFER_MS, defersLeft })
+  installTimer = setTimeout(() => promptInstall(version), UPDATE_DEFER_MS)
+  return updateStatus
+}
 
 /**
  * Where the installer last installed the app (Windows), which is where an
@@ -159,8 +202,8 @@ function installedCopy() {
 
 /**
  * Checks for a new release now and every UPDATE_CHECK_MS. Once one has
- * downloaded, installs it quietly and restarts, so a wall display is never left
- * closed. Only in an installed copy: not in development or the portable zip.
+ * downloaded, counts down to installing it (see promptInstall) and restarts,
+ * so a wall display with nobody at it still updates and is never left closed. Only in an installed copy: not in development or the portable zip.
  */
 function installUpdates() {
   const { installed, installedAt } = installedCopy()
@@ -177,13 +220,7 @@ function installUpdates() {
     console.warn('Update failed:', err?.message ?? err)
     setUpdateStatus({ state: 'error', message: String(err?.message ?? err).split('\n')[0] })
   })
-  autoUpdater.on('update-downloaded', async (info) => {
-    console.log(`Installing ${info.version} and restarting`)
-    setUpdateStatus({ state: 'installing', next: info.version })
-    await writeFile(relaunchFile(), JSON.stringify({ kiosk: KIOSK })).catch(() => {})
-    // Silent install, then start the app again.
-    autoUpdater.quitAndInstall(true, true)
-  })
+  autoUpdater.on('update-downloaded', (info) => promptInstall(info.version))
   checkForUpdates()
   setInterval(checkForUpdates, UPDATE_CHECK_MS)
 }

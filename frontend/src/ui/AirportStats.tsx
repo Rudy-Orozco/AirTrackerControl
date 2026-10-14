@@ -10,8 +10,9 @@ import './AirportStats.css'
 /**
  * What's going on at the airport, in a few quiet lines under its logo:
  * landing and takeoff rates (per STATS.rateUnit, averaged over STATS.rateWindowMs),
- * aircraft airborne, inbound and waiting to leave, the runways in use, and any
- * go-arounds or rejected takeoffs in the last hour.
+ * aircraft airborne, inbound and waiting to leave, the runways in use, how long
+ * this session has run with its landings and takeoffs, and any go-arounds or
+ * rejected takeoffs in the last hour.
  */
 export function AirportStats({
   stats: fed,
@@ -62,37 +63,56 @@ export function AirportStats({
       aria-label="Airport stats"
       style={{ '--arrival': traffic.arrival.color, '--departure': traffic.departure.color } as CSSProperties}
     >
-      {collecting ? (
-        <p>Collecting rates · {formatInterval(MIN_RATE_WINDOW_MS - rateWindow)}</p>
-      ) : STATS.rateUnit === 'interval' ? (
-        <p>
-          {arrUnit} <b className="is-arrival">{arrRate}</b> · {depUnit} <b className="is-departure">{depRate}</b>
-        </p>
-      ) : (
-        <p>
-          <b className="is-arrival">{arrRate}</b> {arrUnit} · <b className="is-departure">{depRate}</b> {depUnit}
-        </p>
-      )}
-      <p>
-        <b>{airborne}</b> airborne · <b>{stats.inbound}</b> inbound · <b>{stats.waiting}</b> waiting
-      </p>
-      {(runways.landing.length > 0 || runways.departing.length > 0) && (
-        <p>
-          rwy{runways.landing.length > 0 && <b className="is-arrival"> {runways.landing.join(' ')}</b>}
-          {runways.departing.length > 0 && <b className="is-departure"> {runways.departing.join(' ')}</b>}
-        </p>
-      )}
-      {procedures.length > 0 && (
-        <p>
-          via
-          {procedures.map(({ procedure, kind, count }) => (
-            <span key={procedure.name}>
-              {' '}
-              <b style={{ color: procedureColor(kind) }}>{procedure.name}</b> {count}
-            </span>
-          ))}
-        </p>
-      )}
+      <dl>
+        <dt>Rate</dt>
+        {collecting ? (
+          <dd>collecting · {formatInterval(MIN_RATE_WINDOW_MS - rateWindow)}</dd>
+        ) : STATS.rateUnit === 'interval' ? (
+          <dd>
+            {arrUnit} <b className="is-arrival">{arrRate}</b> · {depUnit} <b className="is-departure">{depRate}</b>
+          </dd>
+        ) : (
+          <dd>
+            <b className="is-arrival">{arrRate}</b> {arrUnit} · <b className="is-departure">{depRate}</b> {depUnit}
+          </dd>
+        )}
+
+        <dt>Traffic</dt>
+        <dd>
+          <b>{airborne}</b> air · <b>{stats.inbound}</b> in · <b>{stats.waiting}</b> wait
+        </dd>
+
+        {(runways.landing.length > 0 || runways.departing.length > 0) && (
+          <>
+            <dt>Rwy</dt>
+            <dd>
+              {runways.landing.length > 0 && <b className="is-arrival">{runways.landing.join(' ')}</b>}
+              {runways.landing.length > 0 && runways.departing.length > 0 && ' '}
+              {runways.departing.length > 0 && <b className="is-departure">{runways.departing.join(' ')}</b>}
+            </dd>
+          </>
+        )}
+
+        {procedures.length > 0 && (
+          <>
+            <dt>Via</dt>
+            <dd>
+              {procedures.map(({ procedure, kind, count }, i) => (
+                <span key={procedure.name}>
+                  {i > 0 && ' '}
+                  <b style={{ color: procedureColor(kind) }}>{procedure.name}</b> {count}
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+
+        <dt className="is-session">Session</dt>
+        <dd className="is-session">
+          <b>{formatDuration(now - stats.sessionStart)}</b> · <b className="is-arrival">{stats.totalLandings}</b> ldg ·{' '}
+          <b className="is-departure">{stats.totalTakeoffs}</b> dep
+        </dd>
+      </dl>
       {events.length > 0 && <p className="is-notable">{events.join(' · ')}</p>}
     </section>
   )
@@ -102,6 +122,12 @@ export function AirportStats({
 function formatInterval(ms: number) {
   const seconds = Math.round(ms / 1000)
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
+/** "12m", "1h 05m". */
+function formatDuration(ms: number) {
+  const minutes = Math.max(0, Math.floor(ms / 60_000))
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
 }
 
 /** How many of the busiest procedures to list. */
@@ -126,6 +152,9 @@ function useSinceReset(stats: AirportStatsState | null): AirportStatsState | nul
   return {
     ...stats,
     since: resetAt,
+    sessionStart: resetAt,
+    totalLandings: after(stats.landings).length,
+    totalTakeoffs: after(stats.takeoffs).length,
     landings: after(stats.landings),
     takeoffs: after(stats.takeoffs),
     goArounds: after(stats.goArounds),

@@ -2,7 +2,8 @@
  * Runs in the page before it loads (desktop app only). Gives the page a small,
  * safe bridge for page zoom and quitting, which a web page can't otherwise do:
  * window.desktop.zoom(step), .zoomFactor(), .onZoom(callback), .quit(), and
- * .updateStatus(), .checkForUpdates() and .onUpdateStatus(callback).
+ * .updateStatus(), .checkForUpdates(), .installUpdate(), .deferUpdate() and
+ * .onUpdateStatus(callback).
  * (CommonJS: Electron's sandboxed preload scripts can't be ES modules.)
  */
 const { contextBridge, ipcRenderer } = require('electron')
@@ -23,6 +24,10 @@ contextBridge.exposeInMainWorld('desktop', {
   updateStatus: () => ipcRenderer.invoke('update-status'),
   /** Looks for a new release now; resolves to the status after. */
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  /** Installs a downloaded update now (the app restarts). */
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  /** Puts off a downloaded update's countdown, while there are deferrals left; resolves to the status after. */
+  deferUpdate: () => ipcRenderer.invoke('defer-update'),
   /** Called with the status whenever it changes. */
   onUpdateStatus: (callback) => {
     const listener = (_event, status) => callback(status)

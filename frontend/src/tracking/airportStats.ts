@@ -10,6 +10,11 @@ export interface AirportStatsState {
   aborts: number[]
   /** Since when they've been counted (epoch ms): the app's start, or STATS_WINDOW_MS ago if longer. */
   since: number
+  /** When this session began (epoch ms): the app's start or the last reset, carried across reloads. */
+  sessionStart: number
+  /** Every landing and takeoff counted this session, not just the last STATS_WINDOW_MS. */
+  totalLandings: number
+  totalTakeoffs: number
   /** Arrivals in the air, and departures on the ground at the airport waiting to go. */
   inbound: number
   waiting: number
@@ -53,6 +58,9 @@ export class AirportStats {
   private goArounds: number[] = []
   private aborts: number[] = []
   private since = Date.now()
+  private sessionStart = this.since
+  private totalLandings = 0
+  private totalTakeoffs = 0
   /** Per arrival: the lowest it's been (feet above the field) on this approach, close in. */
   private lowest = new Map<string, number>()
   /** Per aircraft on the ground: how far through a takeoff roll it is. */
@@ -74,15 +82,20 @@ export class AirportStats {
     this.goArounds = []
     this.aborts = []
     this.since = Date.now()
+    this.sessionStart = this.since
+    this.totalLandings = 0
+    this.totalTakeoffs = 0
     this.store(this.since)
   }
 
   landed(at: number) {
     this.landings.push(at)
+    this.totalLandings++
   }
 
   tookOff(at: number) {
     this.takeoffs.push(at)
+    this.totalTakeoffs++
   }
 
   update(flights: Flight[], now: number): AirportStatsState {
@@ -110,6 +123,9 @@ export class AirportStats {
       goArounds: this.goArounds,
       aborts: this.aborts,
       since: this.since,
+      sessionStart: this.sessionStart,
+      totalLandings: this.totalLandings,
+      totalTakeoffs: this.totalTakeoffs,
       inbound: flights.filter((f) => f.kind === 'arrival' && !f.onGround).length,
       waiting: flights.filter((f) => f.kind === 'departure' && f.onGround).length,
     }
@@ -162,6 +178,10 @@ export class AirportStats {
       this.goArounds = times(saved.goArounds)
       this.aborts = times(saved.aborts)
       if (typeof saved.since === 'number') this.since = saved.since
+      this.sessionStart = typeof saved.sessionStart === 'number' ? saved.sessionStart : this.since
+      const total = (v: unknown, atLeast: number) => (typeof v === 'number' ? Math.max(v, atLeast) : atLeast)
+      this.totalLandings = total(saved.totalLandings, this.landings.length)
+      this.totalTakeoffs = total(saved.totalTakeoffs, this.takeoffs.length)
     } catch {
       // Start counting afresh.
     }
@@ -169,8 +189,11 @@ export class AirportStats {
 
   private store(now: number) {
     try {
-      const { landings, takeoffs, goArounds, aborts, since } = this
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ landings, takeoffs, goArounds, aborts, since, savedAt: now }))
+      const { landings, takeoffs, goArounds, aborts, since, sessionStart, totalLandings, totalTakeoffs } = this
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ landings, takeoffs, goArounds, aborts, since, sessionStart, totalLandings, totalTakeoffs, savedAt: now }),
+      )
     } catch {
       // Storage unavailable: the stats start again after a reload.
     }

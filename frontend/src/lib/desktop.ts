@@ -12,8 +12,12 @@ export interface DesktopBridge {
   quit(): Promise<void>
   /** Where updating has got to. */
   updateStatus(): Promise<UpdateStatus>
-  /** Looks for a new release now (it downloads and installs by itself); resolves to the status after. */
+  /** Looks for a new release now (it downloads by itself, then counts down to installing); resolves to the status after. */
   checkForUpdates(): Promise<UpdateStatus>
+  /** Installs a downloaded update now (the app restarts). */
+  installUpdate(): Promise<UpdateStatus>
+  /** Puts off a downloaded update's countdown, while there are deferrals left; resolves to the status after. */
+  deferUpdate(): Promise<UpdateStatus>
   /** Calls back with the status whenever it changes; returns a function to stop. */
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void
 }
@@ -21,7 +25,7 @@ export interface DesktopBridge {
 /** Where the desktop app's updating has got to (electron/main.mjs). */
 export interface UpdateStatus {
   /** unavailable: not the installed copy (development, the zip or a local build), so it doesn't update itself. */
-  state: 'unavailable' | 'idle' | 'checking' | 'latest' | 'downloading' | 'installing' | 'error'
+  state: 'unavailable' | 'idle' | 'checking' | 'latest' | 'downloading' | 'ready' | 'deferred' | 'installing' | 'error'
   /** The version running. */
   version: string
   /** The app file running, to tell an installed copy from another. */
@@ -31,6 +35,12 @@ export interface UpdateStatus {
   /** The version being downloaded or installed. */
   next?: string
   percent?: number
+  /** ready: when it installs (epoch ms) unless put off. */
+  installAt?: number
+  /** deferred: when the countdown starts again (epoch ms). */
+  promptAt?: number
+  /** ready and deferred: how many more times it can be put off. */
+  defersLeft?: number
   message?: string
 }
 

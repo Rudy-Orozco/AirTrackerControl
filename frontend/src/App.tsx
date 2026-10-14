@@ -7,6 +7,7 @@ import { AirTrafficCanvas } from './map/AirTrafficCanvas'
 import { AircraftPanel } from './ui/AircraftPanel'
 import { AirportLogo } from './ui/AirportLogo'
 import { AirportStats } from './ui/AirportStats'
+import { UpdateNotice } from './ui/UpdateNotice'
 import { Board } from './board/Board'
 import { BootScreen } from './ui/BootScreen'
 import { FeedLost } from './ui/FeedLost'
@@ -92,6 +93,7 @@ function Dashboard() {
       <BootScreen boot={boot} board={boardRef} />
       <div className="product-name">{PRODUCT_NAME}</div>
       <SettingsPanel />
+      <UpdateNotice />
     </main>
   )
 }

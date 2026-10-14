@@ -1,0 +1,95 @@
+/* At the top of the screen, over everything but the intro (the settings panel is z-index 3). */
+.update-notice {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  z-index: 4;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 10px 12px 12px 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgb(8 12 20 / 0.94);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  color: var(--text);
+  font: 13px / 1.4 var(--sans);
+  animation: update-notice-in 0.25s ease-out;
+}
+
+@keyframes update-notice-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+}
+
+.update-notice-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.update-notice-text b {
+  font-weight: 600;
+}
+
+.update-notice-text span {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.update-notice-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.update-notice-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.update-notice-actions button:hover {
+  background: rgb(220 230 245 / 0.08);
+}
+
+.update-notice-actions button.is-primary {
+  border-color: #4ea2ff;
+  background: #4ea2ff;
+  color: #03050a;
+  font-weight: 600;
+}
+
+.update-notice-close {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font: 18px / 1 var(--sans);
+  cursor: pointer;
+}
+
+.update-notice-close:hover {
+  color: var(--text);
+}
+
+/* Download progress, or the time left in the countdown, along the bottom edge. */
+.update-notice-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: #4ea2ff;
+  transition: width 1s linear;
+}

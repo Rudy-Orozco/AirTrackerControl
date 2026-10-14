@@ -17,6 +17,7 @@ import {
   resetMinimapPlacement,
   resetSettings,
   setSetting,
+  settingApplies,
   SETTING_TABS,
   TERRAIN_SETTING,
   TOWER_SETTING,
@@ -254,6 +255,15 @@ export function SettingsPanel() {
               </button>
             ))}
           </nav>
+          {/* Highlighted when a changed setting only applies after a reload. */}
+          {needsReload() && (
+            <div className="settings-reload">
+              <span>Some changes apply after a reload</span>
+              <button type="button" className="settings-action is-primary" onClick={() => window.location.reload()}>
+                Reload now
+              </button>
+            </div>
+          )}
           <div className="settings-body" role="tabpanel" aria-label={activeTab.title}>
             {activeTab.groups.some((g) => g.perKind) && (
               <KindSwitch kind={kind} onChange={chooseKind} colorOf={(k) => kindColor(activeTab.groups, k)} />
@@ -263,7 +273,18 @@ export function SettingsPanel() {
               if (group.settings.length === 0 && kindSettings.length === 0) return null
               return (
               <section key={group.title} className="settings-group">
-                <h3>{group.title}</h3>
+                <header className="settings-group-header">
+                  <h3>{group.title}</h3>
+                  {group.actions && (
+                    <div className="settings-group-actions">
+                      {group.actions.map((a) => (
+                        <button key={a.label} type="button" className="settings-link" title={a.title} onClick={a.run}>
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </header>
                 {group.note && <p className="settings-note-line">{group.note()}</p>}
                 {group.settings.map((s) => (
                   <SettingRow key={s.path} setting={s} />
@@ -277,20 +298,6 @@ export function SettingsPanel() {
                 {kindSettings.map((s) => (
                   <SettingRow key={s.path} setting={s} />
                 ))}
-                {group.action && (
-                  <button type="button" className="settings-action" onClick={group.action.run}>
-                    {group.action.label}
-                  </button>
-                )}
-                {group.actions && (
-                  <div className="settings-actions">
-                    {group.actions.map((a) => (
-                      <button key={a.label} type="button" className="settings-action" title={a.title} onClick={a.run}>
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </section>
               )
             })}
@@ -300,25 +307,23 @@ export function SettingsPanel() {
           <footer className="settings-footer">
             <SaveRow />
             <div className="settings-footer-actions">
-            {/* Highlighted when a changed setting only applies after a reload. */}
-            {needsReload() ? (
-              <button type="button" className="settings-action is-primary" onClick={() => window.location.reload()}>
-                Reload to apply
+              <button
+                type="button"
+                className="settings-link"
+                title="Every setting back to its default (the save is kept until you save again)"
+                onClick={() => window.confirm('Reset every setting to its default?') && resetSettings()}
+              >
+                Reset all
               </button>
-            ) : (
-              <button type="button" className="settings-action" onClick={() => window.location.reload()}>
-                Reload page
+              <button type="button" className="settings-link" onClick={() => window.location.reload()}>
+                Reload
               </button>
-            )}
-            <button type="button" className="settings-action" onClick={resetSettings}>
-              Reset all to defaults
-            </button>
-            {/* Desktop app only: a web page can't close the browser. */}
-            {desktop && (
-              <button type="button" className="settings-action" title="Quit the app" onClick={() => desktop!.quit()}>
-                Shut down
-              </button>
-            )}
+              {/* Desktop app only: a web page can't close the browser. */}
+              {desktop && (
+                <button type="button" className="settings-link is-danger" title="Quit the app" onClick={() => desktop!.quit()}>
+                  Shut down
+                </button>
+              )}
             </div>
           </footer>
         </aside>
@@ -597,19 +602,21 @@ function loadKind(): FlightKind {
 export function SettingRow({ setting }: { setting: Setting }) {
   const id = useId()
   const value = getSetting(setting)
+  // One that only matters while another is on sits indented under it, dimmed while that's off.
+  const off = !settingApplies(setting)
   return (
-    <div className="settings-row">
+    <div className={`settings-row${setting.when ? ' is-dependent' : ''}${off ? ' is-off' : ''}`}>
       <label htmlFor={id}>
         {setting.label}
         {setting.reload && <span className="settings-note"> · reload</span>}
         {setting.hint && <small>{setting.hint}</small>}
       </label>
-      <Control id={id} setting={setting} value={value} />
+      <Control id={id} setting={setting} value={value} disabled={off} />
     </div>
   )
 }
 
-function Control({ id, setting, value }: { id: string; setting: Setting; value: unknown }) {
+function Control({ id, setting, value, disabled }: { id: string; setting: Setting; value: unknown; disabled: boolean }) {
   switch (setting.type) {
     case 'toggle':
       return (
@@ -619,12 +626,52 @@ function Control({ id, setting, value }: { id: string; setting: Setting; value: 
           role="switch"
           className="settings-switch"
           checked={Boolean(value)}
+          disabled={disabled}
           onChange={(e) => setSetting(setting, e.target.checked)}
         />
       )
     case 'color':
-      return <input id={id} type="color" value={String(value)} onChange={(e) => setSetting(setting, e.target.value)} />
+      return <input id={id} type="color" value={String(value)} disabled={disabled} onChange={(e) => setSetting(setting, e.target.value)} />
+    case 'steps': {
+      const at = Number(value)
+      return (
+        <span className="settings-range">
+          <input
+            id={id}
+            type="range"
+            min={0}
+            max={setting.stops.length - 1}
+            step={1}
+            value={at}
+            disabled={disabled}
+            aria-valuetext={setting.stops[at]?.label}
+            onChange={(e) => setSetting(setting, Number(e.target.value))}
+          />
+          <span className="settings-step-label">{setting.stops[at]?.label}</span>
+        </span>
+      )
+    }
     case 'select': {
+      // A few short choices read better as a row of buttons than a dropdown.
+      if (setting.options.length <= 3 && setting.options.every((o) => !o.group && o.label.length <= 12)) {
+        return (
+          <div id={id} className="settings-segmented" role="radiogroup" aria-label={setting.label}>
+            {setting.options.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={String(value) === o.value}
+                className={String(value) === o.value ? 'is-active' : undefined}
+                disabled={disabled}
+                onClick={() => setSetting(setting, o.value)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )
+      }
       const option = (o: { value: string; label: string }) => (
         <option key={o.value} value={o.value}>
           {o.label}
@@ -634,7 +681,7 @@ function Control({ id, setting, value }: { id: string; setting: Setting; value: 
       const groups = new Map<string, typeof setting.options>()
       for (const o of setting.options) groups.set(o.group ?? '', [...(groups.get(o.group ?? '') ?? []), o])
       return (
-        <select id={id} value={String(value)} onChange={(e) => setSetting(setting, e.target.value)}>
+        <select id={id} value={String(value)} disabled={disabled} onChange={(e) => setSetting(setting, e.target.value)}>
           {[...groups].map(([group, options]) =>
             group ? (
               <optgroup key={group} label={group}>
@@ -659,9 +706,10 @@ function Control({ id, setting, value }: { id: string; setting: Setting; value: 
             max={setting.max / scale}
             step={setting.step / scale}
             value={shown}
+            disabled={disabled}
             onChange={(e) => setSetting(setting, Math.round(Number(e.target.value) * scale * 1000) / 1000)}
           />
-          <NumberField setting={setting} shown={shown} />
+          <NumberField setting={setting} shown={shown} disabled={disabled} />
           {setting.unit && <span className="settings-unit">{setting.unit}</span>}
         </span>
       )
@@ -673,7 +721,7 @@ function Control({ id, setting, value }: { id: string; setting: Setting; value: 
  * The slider's value, which can also be typed in. Applied on Enter or when
  * leaving the field, kept between the slider's ends; Esc puts it back.
  */
-function NumberField({ setting, shown }: { setting: Extract<Setting, { type: 'range' }>; shown: number }) {
+function NumberField({ setting, shown, disabled }: { setting: Extract<Setting, { type: 'range' }>; shown: number; disabled: boolean }) {
   const scale = setting.scale ?? 1
   const [draft, setDraft] = useState<string | null>(null)
   const commit = () => {
@@ -693,6 +741,7 @@ function NumberField({ setting, shown }: { setting: Extract<Setting, { type: 'ra
       max={setting.max / scale}
       step={setting.step / scale}
       value={draft ?? formatNumber(shown)}
+      disabled={disabled}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -802,8 +851,8 @@ function MoreIcon() {
 
 /**
  * The version running and where updating has got to, with a button to look for
- * a new release now. One found downloads, installs and restarts the app by
- * itself (electron/main.mjs).
+ * a new release now. One found downloads by itself, then counts down to
+ * installing and restarting (see UpdateNotice and electron/main.mjs).
  */
 function UpdatesGroup() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
@@ -814,10 +863,12 @@ function UpdatesGroup() {
     return desktop!.onUpdateStatus(setStatus)
   }, [])
 
-  const busy = status?.state === 'checking' || status?.state === 'downloading' || status?.state === 'installing'
+  const busy = status ? ['checking', 'downloading', 'ready', 'deferred', 'installing'].includes(status.state) : false
   return (
     <section className="settings-group">
-      <h3>Updates</h3>
+      <header className="settings-group-header">
+        <h3>Updates</h3>
+      </header>
       <p className="settings-note-line">{status ? updateText(status) : 'Loading…'}</p>
       {/* Changes with every release, to see an update has landed. */}
       <p className="settings-note-line">
@@ -825,6 +876,11 @@ function UpdatesGroup() {
       </p>
       {status?.exe && <p className="settings-note-line settings-exe">Running {status.exe}</p>}
       <div className="settings-actions">
+        {status?.state === 'deferred' && (
+          <button type="button" className="settings-action is-primary" onClick={() => desktop!.installUpdate()}>
+            Install {status.next} now
+          </button>
+        )}
         {status?.state !== 'unavailable' && (
           <button type="button" className="settings-action" disabled={busy} onClick={() => desktop!.checkForUpdates().then(setStatus, () => {})}>
             {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
@@ -897,6 +953,10 @@ function updateText(s: UpdateStatus) {
       return `${running}, the latest.`
     case 'downloading':
       return `${running}. Downloading ${s.next ?? 'the new version'}: ${s.percent ?? 0}%`
+    case 'ready':
+      return `${running}. ${s.next ?? 'A new version'} is ready and installs shortly.`
+    case 'deferred':
+      return `${running}. ${s.next ?? 'A new version'} is ready; installing at ${new Date(s.promptAt ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
     case 'installing':
       return `Installing ${s.next ?? 'the new version'}; the app restarts in a moment.`
     case 'error':

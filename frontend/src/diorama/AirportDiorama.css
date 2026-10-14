@@ -28,6 +28,11 @@
   cursor: grabbing;
 }
 
+/* Around the box: drags go through to the map. */
+.diorama canvas.is-outside {
+  cursor: default;
+}
+
 /* Over an aircraft: a click follows it. */
 .diorama canvas.is-over-aircraft {
   cursor: pointer;

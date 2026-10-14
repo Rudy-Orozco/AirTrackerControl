@@ -297,8 +297,25 @@
   background: rgb(220 230 245 / 0.03);
 }
 
-.settings-group h3 {
+/* A group's title, with its buttons (a reset, say) at the right. */
+.settings-group-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
   margin: 10px 0 4px;
+}
+
+.settings-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-right: -6px;
+}
+
+.settings-group h3 {
+  margin: 0;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.1em;
@@ -312,6 +329,26 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 32px;
+}
+
+.settings-row label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Only matters while the setting above it is on: indented under it, dimmed while it's off. */
+.settings-row.is-dependent {
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.settings-row.is-off {
+  opacity: 0.4;
+}
+
+.settings-row.is-off * {
+  cursor: default;
 }
 
 .settings-row label small {
@@ -380,6 +417,43 @@
   border-radius: 4px;
   background: none;
   cursor: pointer;
+}
+
+/* A few short choices as a row of buttons (like the traffic switch). */
+.settings-segmented {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.settings-segmented button {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 12px var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-segmented button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.settings-segmented button.is-active {
+  background: rgb(78 162 255 / 0.2);
+  color: var(--text);
+}
+
+/* The stop a steps slider is at, where a range's number would be. */
+.settings-step-label {
+  min-width: 84px;
+  font: 500 12px var(--sans);
+  color: var(--text);
 }
 
 /* A toggle switch drawn from a plain checkbox. */
@@ -556,11 +630,59 @@
   border-top: 1px solid var(--line);
 }
 
+/* Reset, reload and shut down: quiet, under the save. */
 .settings-footer-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 4px;
+  margin-right: -6px;
+}
+
+/* A quiet text button: group actions and the footer's. */
+.settings-link {
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #4ea2ff;
+  font: 500 12px var(--sans);
+  cursor: pointer;
+}
+
+.settings-link:hover {
+  background: rgb(78 162 255 / 0.12);
+}
+
+.settings-footer-actions .settings-link {
+  color: var(--text-dim);
+}
+
+.settings-footer-actions .settings-link:hover {
+  color: var(--text);
+  background: rgb(220 230 245 / 0.08);
+}
+
+.settings-footer-actions .settings-link.is-danger:hover {
+  color: var(--error);
+  background: rgb(255 107 87 / 0.1);
+}
+
+/* Changes waiting on a reload: a strip under the tabs. */
+.settings-reload {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: rgb(78 162 255 / 0.1);
+  font-size: 12px;
+}
+
+.settings-reload .settings-action {
+  margin-top: 0;
+  padding: 4px 10px;
 }
 
 /* Save for this airport and layout, above the reload and reset buttons. */
@@ -568,9 +690,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 0 8px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--line);
+  padding: 8px 0 4px;
 }
 
 .settings-save-status {
@@ -689,6 +809,14 @@
 
   .settings-action {
     padding: 10px 14px;
+  }
+
+  .settings-link {
+    padding: 10px 10px;
+  }
+
+  .settings-segmented button {
+    padding: 9px 12px;
   }
 
   .settings-range input[type='range'] {

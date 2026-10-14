@@ -72,6 +72,8 @@ const EDGES = ['top', 'right', 'bottom', 'left'] as const
  * Drag inside to rotate and tilt (double-click resets the angle), drag the
  * caption strip to move it, and drag the corner handle to resize it. Click an
  * aircraft to follow it, like on the maps (locked, that's all a click does).
+ * Drags and scrolls in the empty space around the box, or anywhere but an
+ * aircraft while locked, go through to the map underneath.
  * The layout is remembered in this browser.
  */
 export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: GroundTracker }) {
@@ -92,6 +94,8 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
   windRef.current = DIORAMA.showWind && metar ? windOf(metar) : null
   // Where each aircraft was drawn last frame, for clicking on one.
   const hitsRef = useRef<{ hex: string; at: Point }[]>([])
+  // The box's outline on the canvas: presses outside it go through to the map.
+  const outlineRef = useRef<Point[]>([])
 
   useEffect(() => {
     const canvas = canvasRef.current!
@@ -115,7 +119,8 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
       builtSettings = settingsVersion()
       view = createDioramaView(layout, width, height, builtAngle)
       background = renderDioramaBackground(layout, view, width, height, dpr)
-      backdropMask = silhouetteMask(boxSilhouette(view), width, height)
+      outlineRef.current = boxSilhouette(view)
+      backdropMask = silhouetteMask(outlineRef.current, width, height)
     }
 
     const resize = () => {
@@ -225,6 +230,32 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
     return best
   }
 
+  /**
+   * Whether a press at this point is the panel's: on an aircraft, or (unlocked)
+   * inside the box. Anywhere else, the empty space around the box or all but
+   * the aircraft while locked, belongs to the map underneath.
+   */
+  const ownsPoint = (clientX: number, clientY: number) => {
+    if (aircraftAt(clientX, clientY) !== null) return true
+    if (DIORAMA.locked) return false
+    const rect = canvasRef.current!.getBoundingClientRect()
+    return insidePolygon(outlineRef.current, clientX - rect.left, clientY - rect.top)
+  }
+
+  /** Hands an event to whatever is under the panel at its point (the map), as if the panel weren't there. */
+  const passThrough = (e: PointerEvent | WheelEvent) => {
+    const container = containerRef.current!
+    container.style.visibility = 'hidden'
+    const under = document.elementFromPoint(e.clientX, e.clientY)
+    container.style.visibility = ''
+    if (!under) return
+    // The original event's own fields (pointer id, buttons, deltas...) carry over.
+    const copy = e instanceof WheelEvent ? new WheelEvent(e.type, e) : new PointerEvent(e.type, e)
+    under.dispatchEvent(copy)
+    // (React's wheel listener is passive, so only a press can be prevented.)
+    if (copy.defaultPrevented && e instanceof PointerEvent) e.preventDefault()
+  }
+
   /** Picks the aircraft under a click or tap that didn't move, if there is one. */
   const pickAt = (ev: PointerEvent, dx: number, dy: number) => {
     if (ev.type !== 'pointerup' || Math.hypot(dx, dy) >= TAP_SLOP_PX) return
@@ -239,6 +270,11 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
    * angle. Locked, it only picks aircraft.
    */
   const onCanvasPointerDown = (e: ReactPointerEvent) => {
+    // Shift+drag still moves the panel from anywhere on it.
+    if (!e.shiftKey && !ownsPoint(e.clientX, e.clientY)) {
+      passThrough(e.nativeEvent)
+      return
+    }
     stopSpin()
     if (DIORAMA.locked) {
       if (e.button !== 0 || !e.isPrimary) return
@@ -420,7 +456,10 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
 
   /** Scroll over the cube to grow or shrink it around its middle. Ctrl+scroll is left for page zoom. */
   const onWheel = (e: ReactWheelEvent) => {
-    if (DIORAMA.locked || e.ctrlKey || e.deltaY === 0) return
+    if (e.ctrlKey) return
+    // Locked, or outside the box: the map's to zoom.
+    if (!ownsPoint(e.clientX, e.clientY)) return passThrough(e.nativeEvent)
+    if (e.deltaY === 0) return
     const start = currentPlacement()
     const size = clamp(start.size * (e.deltaY < 0 ? WHEEL_ZOOM : 1 / WHEEL_ZOOM), MIN_SIZE, maxPanelSize())
     const grow = (size - start.size) / 2
@@ -465,10 +504,13 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
         <canvas
           ref={canvasRef}
           onPointerDown={onCanvasPointerDown}
-          onDoubleClick={(e) => !DIORAMA.locked && aircraftAt(e.clientX, e.clientY) === null && resetAngle()}
+          onDoubleClick={(e) => !DIORAMA.locked && aircraftAt(e.clientX, e.clientY) === null && ownsPoint(e.clientX, e.clientY) && resetAngle()}
           onWheel={onWheel}
           onPointerMove={(e) => {
-            if (e.pointerType === 'mouse' && e.buttons === 0) e.currentTarget.classList.toggle('is-over-aircraft', aircraftAt(e.clientX, e.clientY) !== null)
+            if (e.pointerType !== 'mouse' || e.buttons !== 0) return
+            e.currentTarget.classList.toggle('is-over-aircraft', aircraftAt(e.clientX, e.clientY) !== null)
+            // Outside the box, the map's cursor: a drag there moves the map.
+            e.currentTarget.classList.toggle('is-outside', !ownsPoint(e.clientX, e.clientY))
           }}
           onContextMenu={(e) => e.preventDefault()}
           title={
@@ -505,6 +547,16 @@ export function AirportDiorama({ tracker, ground }: { tracker: Tracker; ground: 
       </div>
     </>
   )
+}
+
+/** Whether (x, y) is inside the polygon `points` (even-odd rule). */
+function insidePolygon(points: Point[], x: number, y: number) {
+  let inside = false
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [a, b] = [points[i], points[j]]
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
 }
 
 /** "KDFW SURFACE  3 TAXIING · 41 PARKED" */

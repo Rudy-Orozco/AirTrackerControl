@@ -6,6 +6,10 @@ GitHub and shows in the app under Settings › General › Updates › What's ne
 
 Each release is a `## <version> — <date>` heading followed by `- ` lines.
 
+## 0.1.3 — 2026-10-13
+
+- Fixed Update Loop when not running installed copy
+
 ## 0.1.2 — 2026-10-13
 
 - What's new: this changelog, in Settings › General › Updates and on each GitHub release.

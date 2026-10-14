@@ -16,7 +16,7 @@
  */
 import { app, BrowserWindow, ipcMain, net, protocol, shell } from 'electron'
 import updater from 'electron-updater'
-import { readFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -100,10 +100,10 @@ function takeRelaunchState() {
  * 'idle', 'checking', 'latest', 'downloading' (with percent), 'installing' or
  * 'error' (with message).
  */
-let updateStatus = { state: 'idle', version: app.getVersion() }
+let updateStatus = { state: 'idle', version: app.getVersion(), exe: process.execPath }
 
 function setUpdateStatus(status) {
-  updateStatus = { ...status, version: app.getVersion() }
+  updateStatus = { ...status, version: app.getVersion(), exe: process.execPath }
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('update-status', updateStatus)
 }
 
@@ -119,12 +119,28 @@ ipcMain.handle('update-status', () => updateStatus)
 ipcMain.handle('check-for-updates', () => checkForUpdates())
 
 /**
+ * Whether this is the copy the installer put in place, the one an update
+ * replaces. Any other (development, the zip, a local build in release/) would
+ * install the update somewhere else and stay old itself, updating again at
+ * every start. On Windows the installer leaves its uninstaller beside the app.
+ */
+function installedCopy() {
+  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) return false
+  if (process.platform !== 'win32') return true
+  try {
+    return readdirSync(path.dirname(process.execPath)).some((f) => /^Uninstall .*\.exe$/i.test(f))
+  } catch {
+    return false
+  }
+}
+
+/**
  * Checks for a new release now and every UPDATE_CHECK_MS. Once one has
  * downloaded, installs it quietly and restarts, so a wall display is never left
  * closed. Only in an installed copy: not in development or the portable zip.
  */
 function installUpdates() {
-  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) {
+  if (!installedCopy()) {
     setUpdateStatus({ state: 'unavailable' })
     return
   }

@@ -820,6 +820,7 @@ function UpdatesGroup() {
       <p className="settings-note-line">
         Build {__BUILD__.commit} · {new Date(__BUILD__.time).toLocaleString()}
       </p>
+      {status?.exe && <p className="settings-note-line settings-exe">Running {status.exe}</p>}
       {status?.state !== 'unavailable' && (
         <button type="button" className="settings-action" disabled={busy} onClick={() => desktop!.checkForUpdates().then(setStatus, () => {})}>
           {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
@@ -850,7 +851,7 @@ function updateText(s: UpdateStatus) {
   const running = `Version ${s.version}`
   switch (s.state) {
     case 'unavailable':
-      return `${running}. Only the installed app updates itself (not this copy).`
+      return `${running}. Only the copy the installer put in place updates itself, not this one (development, the zip or a local build).`
     case 'checking':
       return `${running}. Checking for a new version…`
     case 'latest':

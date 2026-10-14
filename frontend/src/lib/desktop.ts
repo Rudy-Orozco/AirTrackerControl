@@ -20,10 +20,12 @@ export interface DesktopBridge {
 
 /** Where the desktop app's updating has got to (electron/main.mjs). */
 export interface UpdateStatus {
-  /** unavailable: not an installed copy (development or the portable zip), so it can't update itself. */
+  /** unavailable: not the installed copy (development, the zip or a local build), so it doesn't update itself. */
   state: 'unavailable' | 'idle' | 'checking' | 'latest' | 'downloading' | 'installing' | 'error'
   /** The version running. */
   version: string
+  /** The app file running, to tell an installed copy from another. */
+  exe?: string
   /** The version being downloaded or installed. */
   next?: string
   percent?: number

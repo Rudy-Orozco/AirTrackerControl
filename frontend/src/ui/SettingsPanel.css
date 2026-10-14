@@ -431,6 +431,11 @@
   background: rgb(220 230 245 / 0.08);
 }
 
+/* A long file path: breaks anywhere rather than widening the panel. */
+.settings-exe {
+  overflow-wrap: anywhere;
+}
+
 .settings-changelog {
   margin-top: 10px;
   font-size: 11px;

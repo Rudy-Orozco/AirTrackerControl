@@ -10,17 +10,14 @@
  */
 
 import airports from '../../airports.json'
+import { localStore } from '../services/storage'
 
-/** localStorage key for changes made in the settings panel, as { "MAP.planeSize": 12, ... }. */
+/** Storage key for changes made in the settings panel, as { "MAP.planeSize": 12, ... }. */
 export const SETTINGS_KEY = 'settings'
 
 export function loadSavedSettings(): Record<string, unknown> {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}')
-    return saved && typeof saved === 'object' ? migrate(saved) : {}
-  } catch {
-    return {}
-  }
+  const saved = localStore.getJson(SETTINGS_KEY)
+  return saved && typeof saved === 'object' ? migrate(saved as Record<string, unknown>) : {}
 }
 
 /**

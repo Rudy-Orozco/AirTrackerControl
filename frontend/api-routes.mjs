@@ -28,7 +28,7 @@ export const API_ROUTES = {
       return q && `/v2/point/${q.lat}/${q.lon}/${q.radius}`
     },
   },
-  // The same from adsb.fi, used when adsb.lol is rate-limiting (src/feed/api.ts).
+  // The same from adsb.fi, used when adsb.lol is rate-limiting (src/services/api/aircraft.ts).
   '/api/aircraft-adsbfi': {
     target: 'https://opendata.adsb.fi',
     rewrite: (path) => {

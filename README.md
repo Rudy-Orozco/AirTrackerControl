@@ -30,25 +30,37 @@ frontend/
   public/procedures/   STARs, SIDs and approaches per airport (see "Procedures" below)
   public/logos/        airport logos
   src/
-    App.tsx            top-level layout: maps, diorama, board, settings
-    index.css          global styles: fonts, color variables, page and shared map canvas
-    config/            tunable defaults (config.ts) and the live settings store (settings.ts)
-    feed/              fetching aircraft and routes, and the polling hook
-    tracking/          flight classification, smoothed air and ground tracks, airport stats
-    procedures/        STARs, SIDs and approaches: loading, importing, and matching flights to them
-    map/               2D map: canvas renderer, labels, basemap, radar, terrain
-    map3d/             3D map (three.js)
-    diorama/           3D airport view
-    aircraft/          aircraft silhouettes and 3D models, shared by map3d and diorama
-    board/             split-flap arrivals/departures board
-    weather/           METAR and ATIS: parsing, strips and icons
-    ui/                boot screen, settings panel, logo, icons
-    lib/               small shared helpers (hooks, layout, desktop bridge)
+    main.tsx           entry point
+    app/               App.tsx, the top-level layout: maps, diorama, board, settings
+    styles/            global styles: fonts, color variables, page and shared map canvas
+    components/        React components, one folder each (board, map, map3d, diorama, weather, panels, overlays, common)
+    hooks/             React hooks: the aircraft polling loop, METAR, ATIS, ticking clocks
+    state/             app-wide stores: settings, saved setups, selection, street view, orbit point
+    domain/            the app's logic, free of React and drawing: tracking, procedures, board, weather decoding
+    rendering/         drawing: 2D map canvas, 3D map (three.js), airport diorama, aircraft models
+    services/          everything that talks to the outside: api/ (HTTP), storage.ts (browser storage), desktop.ts (Electron bridge)
+    config/            tunable defaults (config.ts) and airport presets
+    utils/             small generic helpers (touch, panel placement, layout)
+    types/             shared data shapes (basemap, airport layout) and ambient declarations
 scripts/               Python tools that build basemaps and airport layouts (OpenStreetMap) and procedures (FAA CIFP)
 ```
 
-Each component's styles sit next to it (`Board.tsx` + `Board.css`) and are imported
-by the component. Shared variables (`--bg`, `--text`, fonts) live in `src/index.css`.
+The layers depend downward only:
+
+```
+components → hooks → rendering → state → domain → services → config → utils / types
+```
+
+A layer may skip those below it (components use all of them) but never import one above it.
+
+- Only `services/` calls `fetch` or touches `localStorage`/`sessionStorage`. To add a data
+  source, add a module under `services/api/` and call it from a hook, store or domain module.
+- `services/` may import *types* from `domain/` (the shapes it returns), never its logic.
+- `services/storage.ts` and `services/http.ts` import nothing from the app, so `config/` can use them.
+
+Each component's styles sit next to it (`components/board/Board/Board.tsx` + `Board.css`)
+and are imported by the component. Shared variables (`--bg`, `--text`, fonts) live in
+`src/styles/index.css`.
 
 ## Adding an airport
 
@@ -186,7 +198,7 @@ exits lead off toward where departures go, so:
 
 Once its path matches a procedure (as above), that replaces the prediction. Origins
 and destinations come from the route database, which is sometimes wrong (see the
-classifier's check in `tracking/flights.ts`); a prediction can only be as good.
+classifier's check in `domain/tracking/flights.ts`); a prediction can only be as good.
 
 ### Where the procedures come from
 

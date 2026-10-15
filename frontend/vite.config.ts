@@ -24,7 +24,7 @@ function commit() {
 export default defineConfig({
   plugins: [react()],
   define: { __BUILD__: JSON.stringify({ commit: commit(), time: new Date().toISOString() }) },
-  // The parent folder too, for CHANGELOG.md at the repo root (src/lib/changelog.ts).
+  // The parent folder too, for CHANGELOG.md at the repo root (src/utils/changelog.ts).
   server: { proxy: apiProxy, fs: { allow: ['..'] } },
   preview: { proxy: apiProxy },
 })

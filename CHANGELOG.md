@@ -6,6 +6,10 @@ GitHub and shows in the app under Settings › General › Updates › What's ne
 
 Each release is a `## <version> — <date>` heading followed by `- ` lines.
 
+## 0.1.7 — 2026-10-15
+
+- Major Code Refactoring and standardization.
+
 ## 0.1.6 — 2026-10-14
 
 - Improved Settings UX, QOL

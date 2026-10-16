@@ -22,6 +22,15 @@ export interface Metar {
   fltCat?: FlightCategory
 }
 
+/** A METAR from an area query, which also says where its station is. */
+export interface StationMetar extends Metar {
+  icaoId: string
+  lat: number
+  lon: number
+  /** Station elevation, meters. */
+  elev: number
+}
+
 // ---- Decoding for display ----------------------------------------------------------
 
 const HPA_TO_INHG = 0.02953

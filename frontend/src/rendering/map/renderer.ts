@@ -1,8 +1,9 @@
 import type { Basemap, Line } from '../../types/airport'
-import { type MapTrafficStyle, type TrafficStyle } from '../../config/config'
+import { MAP, type MapTrafficStyle, type TrafficStyle } from '../../config/config'
 import { mapStyle } from './mapStyle'
 import type { FlightKind } from '../../domain/tracking/flights'
 import type { Radar } from './radar'
+import { CLOUD_BOUNDS, cloudImage, type CloudField } from './clouds'
 import type { Terrain } from './terrain'
 import { leaderLine, newLabelState, updateLabels, type LabelItem, type LabelState } from './labels'
 import { estimatedPath, predictedPath, trailStart, type LatLon, type Track } from '../../domain/tracking/tracker'
@@ -68,7 +69,8 @@ export function renderBackground(
   basemap: Basemap | null,
   radar: Radar | null = null,
   terrain: Terrain | null = null,
-  /** The map credits and radar time in the top-left corner (off for small maps). */
+  clouds: CloudField | null = null,
+  /** The map credits, and radar and satellite times, in the top-left corner (off for small maps). */
   cornerText = true,
 ): HTMLCanvasElement {
   const canvas = document.createElement('canvas')
@@ -89,6 +91,7 @@ export function renderBackground(
   if (terrain && mapStyle().terrain) drawTerrain(ctx, terrain, project)
   if (basemap) drawBasemap(ctx, basemap, project, cornerText)
   if (radar) drawRadar(ctx, radar, project, cornerText)
+  if (clouds && MAP.clouds.enabled && mapStyle().clouds.opacity > 0) drawClouds(ctx, clouds, project, cornerText)
 
   const maxRingNm = maxRadius / pxPerNm
   ctx.strokeStyle = 'rgba(120, 160, 220, 0.12)'
@@ -181,6 +184,33 @@ function drawRadar(ctx: CanvasRenderingContext2D, radar: Radar, project: Project
     ctx.textAlign = 'left'
     ctx.fillStyle = 'rgba(160, 180, 215, 0.4)'
     ctx.fillText(`RADAR ${time}Z`, 16, CORNER_TEXT_TOP + 18)
+    ctx.textBaseline = 'alphabetic'
+  }
+}
+
+/**
+ * The clouds seen from above (clouds.ts), over the radar: like it, in plain
+ * lat/lon, so it stretches onto its corners. Satellite scan time goes in the
+ * top corner, under the radar's.
+ */
+function drawClouds(ctx: CanvasRenderingContext2D, clouds: CloudField, project: Projection, cornerText: boolean) {
+  const { west, south, east, north } = CLOUD_BOUNDS
+  const topLeft = project({ lat: north, lon: west })
+  const bottomRight = project({ lat: south, lon: east })
+  ctx.save()
+  ctx.globalAlpha = mapStyle().clouds.opacity
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(cloudImage(clouds), topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y)
+  ctx.restore()
+
+  if (cornerText && clouds.satelliteTime) {
+    const time = clouds.satelliteTime.toISOString().slice(11, 16).replace(':', '')
+    ctx.font = labelFont()
+    ctx.textBaseline = 'top'
+    ctx.textAlign = 'left'
+    ctx.fillStyle = 'rgba(160, 180, 215, 0.4)'
+    ctx.fillText(`CLOUDS ${time}Z`, 16, CORNER_TEXT_TOP + 36)
     ctx.textBaseline = 'alphabetic'
   }
 }

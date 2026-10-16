@@ -39,6 +39,11 @@ import type { GroundTrack } from '../../domain/tracking/groundTracker'
 import type { AssistPath, RunwayGuide } from '../../domain/tracking/runwayAssist'
 import type { AirportLayout } from '../../types/airport'
 import { buildAirportModel, buildMapRunways } from './airportModel'
+import { CloudLayers, type CloudLabel } from './clouds'
+import { PrecipShafts } from './precip'
+import type { Radar } from '../map/radar'
+import { echoTopAround, type EchoTops } from '../../services/api/echoTops'
+import type { CloudField } from '../map/clouds'
 import { AIRPORT_PRESET, CENTER, FETCH_RADIUS_NM, MAP, MAP3D, PROCEDURES, type Map3DTrafficStyle } from '../../config/config'
 import { proceduresToShow, type ProcedureMatch } from '../../domain/procedures/matcher'
 import { focusRoute } from '../../domain/procedures/route'
@@ -280,6 +285,14 @@ export class Map3D {
   private readonly procedureLines = new Group()
   private procedureKey = ''
   private procedureLabels: { at: Vector3; text: string; color: string; opacity: number; focused: boolean; size?: number; named?: boolean }[] = []
+  /** The clouds (MAP3D.clouds), and the tops over the airport, labeled. */
+  private readonly clouds = new CloudLayers()
+  private cloudLabels: CloudLabel[] = []
+  /** Rain and snow falling from the clouds (MAP3D.precipitation), from the radar the ground was last drawn with. */
+  private readonly precip = new PrecipShafts()
+  private precipRadar: Radar | null = null
+  /** How high the precipitation cores reach, for the rain's height in storms. */
+  private echoTops: EchoTops | null = null
   /** Where each aircraft was drawn on screen last frame, for clicking on one. */
   private hits: { hex: string; x: number; y: number }[] = []
   private readonly crafts = new Map<Track, Craft>()
@@ -311,6 +324,8 @@ export class Map3D {
     this.scene.add(this.world)
     this.world.add(this.ground)
     this.world.add(this.procedureLines)
+    this.world.add(this.clouds.group)
+    this.world.add(this.precip.mesh)
     this.drops.frustumCulled = false
     this.world.add(this.drops)
     this.dots.frustumCulled = false
@@ -375,6 +390,30 @@ export class Map3D {
 
     this.terrain = MAP.terrain ? terrain : null
     this.buildGround()
+    this.precipRadar = radar
+    this.buildPrecip()
+  }
+
+  /** Lets the rain's cores reach as high as `tops` say (none: just from the cloud bases). */
+  setEchoTops(tops: EchoTops | null) {
+    this.echoTops = tops
+    this.buildPrecip()
+  }
+
+  /** Lets the rain fall from the clouds' bases to the ground as they now are. */
+  private buildPrecip() {
+    this.precip.build(this.precipRadar, {
+      radiusNm: FETCH_RADIUS_NM,
+      // The clouds' bases whether or not they're shown, so the rain keeps its height either way.
+      baseAt: (x, y) => this.clouds.baseAt(x, y),
+      coreTopAt: (x, y) => {
+        const tops = this.echoTops
+        return tops && echoTopAround(tops, CENTER.lat + y / 60, CENTER.lon + x / (60 * LON_SCALE))
+      },
+      defaultBaseFt: AIRPORT_PRESET.elevationFt + PRECIP_DEFAULT_BASE_FT,
+      heightOf,
+      groundZ: (x, y) => this.groundZ(x, y),
+    })
   }
 
   /** Flat, or a grid of heights following the terrain (with the aircraft's height exaggeration). */
@@ -419,6 +458,12 @@ export class Map3D {
     this.world.add(this.airport.group)
     this.flatRadius = this.airport.extentNm + FLAT_MARGIN_NM
     if (this.terrain) this.buildGround()
+  }
+
+  /** Shows the clouds (see map/clouds.ts), labeling the tops over the airport. */
+  setClouds(field: CloudField) {
+    this.cloudLabels = this.clouds.set(field, heightOf)
+    this.buildPrecip()
   }
 
   /**
@@ -522,6 +567,10 @@ export class Map3D {
     if (this.airport) this.airport.group.visible = MAP3D.showAirport && nearAirport
     // The map's simple runways, wherever the airport model isn't.
     if (this.mapRunways) this.mapRunways.visible = !this.airport?.group.visible
+    this.clouds.group.visible = MAP3D.clouds.enabled
+    this.clouds.setOpacity(MAP3D.clouds.opacity)
+    this.clouds.setMinDensity(MAP3D.clouds.minDensity)
+    this.precip.update(MAP3D.precipitation.opacity, MAP3D.precipitation.enabled)
     this.world.updateMatrixWorld()
     // Fog only the far side of the map, however far out the camera is zoomed;
     // fixed distances would darken the whole map when zoomed out.
@@ -643,6 +692,7 @@ export class Map3D {
     const ctx = this.labels
     ctx.clearRect(0, 0, this.width, this.height)
     this.drawProcedureLabels()
+    if (MAP3D.clouds.enabled && MAP3D.clouds.labels) this.drawCloudLabels()
     if (MAP.showLabels) drawTrackLabels(ctx, shown, MAP3D.traffic, screen)
     this.drawRouteLabels(routeLabels)
     if (focus?.route && this.focusRoute.visible) this.drawFocusRouteLabel(focus.route)
@@ -704,6 +754,8 @@ export class Map3D {
     }
     for (const lines of this.guideLines.values()) disposeTree(lines.group)
     disposeTree(this.procedureLines)
+    this.clouds.dispose()
+    this.precip.dispose()
     this.controls.dispose()
     this.ground.material.map?.dispose()
     this.ground.material.alphaMap?.dispose()
@@ -1195,6 +1247,27 @@ export class Map3D {
       if (p.z >= 1 || Math.abs(p.x) > 1 || Math.abs(p.y) > 1) continue
       const showName = named ?? (PROCEDURES.labels || focused)
       drawWaypoint(ctx, ((p.x + 1) / 2) * this.width, ((1 - p.y) / 2) * this.height, color, opacity, size ?? (focused ? 5 : 4), showName ? text : null, font)
+    }
+    ctx.globalAlpha = 1
+    ctx.font = labelFont()
+  }
+
+  /** The cloud tops over the airport (feet above sea level), beside it at their height. */
+  private drawCloudLabels() {
+    if (this.cloudLabels.length === 0) return
+    const ctx = this.labels
+    ctx.font = `${Math.max(MAP.labelSize - 2, 8)}px ${MAP.fontFamily}`
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = CLOUD_LABEL_COLOR
+    ctx.globalAlpha = CLOUD_LABEL_OPACITY
+    for (const { at, text } of this.cloudLabels) {
+      const p = at.clone().setZ(at.z * this.vScale).project(this.camera)
+      if (p.z >= 1 || Math.abs(p.x) > 1 || Math.abs(p.y) > 1) continue
+      const x = ((p.x + 1) / 2) * this.width
+      const y = ((1 - p.y) / 2) * this.height
+      ctx.fillRect(x - 6, y - 0.5, 4, 1)
+      ctx.fillText(`${text} FT`, x, y)
     }
     ctx.globalAlpha = 1
     ctx.font = labelFont()
@@ -2562,3 +2635,7 @@ function smooth<T extends { x: number; y: number; z: number }>(points: T[], radi
 
 /** The followed flight's route label fades out within this many pixels (twice this, fully shown) of the aircraft on screen. */
 const ROUTE_LABEL_CLEAR_PX = 40
+const CLOUD_LABEL_COLOR = '#dfe6ee'
+/** Without a cloud overhead, rain and snow fall from this high above the field, feet. */
+const PRECIP_DEFAULT_BASE_FT = 4000
+const CLOUD_LABEL_OPACITY = 0.7

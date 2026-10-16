@@ -47,7 +47,7 @@ export function AirTraffic3D({
       console.warn('3D map unavailable (no WebGL?):', err)
       return
     }
-    let layers: MapLayers = { basemap: null, radar: null, terrain: null }
+    let layers: MapLayers = { basemap: null, radar: null, terrain: null, clouds: null, echoTops: null }
     const redrawGround = () => map.setBackground(layers)
     map.setAssistPaths(
       (t) => tracker.assistPath(t),
@@ -67,8 +67,12 @@ export function AirTraffic3D({
     resize()
 
     const stopLayers = watchMapLayers((loaded) => {
+      // The clouds are sheets of their own, not part of the ground.
+      if (loaded.clouds && loaded.clouds !== layers.clouds) map.setClouds(loaded.clouds)
+      if (loaded.echoTops !== layers.echoTops) map.setEchoTops(loaded.echoTops)
+      const groundChanged = loaded.basemap !== layers.basemap || loaded.radar !== layers.radar || loaded.terrain !== layers.terrain
       layers = loaded
-      redrawGround()
+      if (groundChanged) redrawGround()
     })
     document.fonts.load(labelFont()).then(redrawGround, () => {})
 

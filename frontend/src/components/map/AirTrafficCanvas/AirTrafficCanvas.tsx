@@ -41,7 +41,7 @@ export function AirTrafficCanvas({
     let width = 0
     let height = 0
     let dpr = 1
-    let layers: MapLayers = { basemap: null, radar: null, terrain: null }
+    let layers: MapLayers = { basemap: null, radar: null, terrain: null, clouds: null, echoTops: null }
     let view = createView(1, 1, VIEW_RADIUS_NM)
     let project = createProjection(view, CENTER)
     let background = renderBackground(1, 1, 1, view, project, null)
@@ -85,7 +85,7 @@ export function AirTrafficCanvas({
       bakedPan = pan
       bakedView = view
       bakedAt = performance.now()
-      background = renderBackground(width, height, dpr, view, project, layers.basemap, layers.radar, layers.terrain)
+      background = renderBackground(width, height, dpr, view, project, layers.basemap, layers.radar, layers.terrain, layers.clouds)
     }
 
     const resize = () => {

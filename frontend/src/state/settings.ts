@@ -245,14 +245,6 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: p('trailWidth'), label: 'Width', type: 'range', min: 0.5, max: 5, step: 0.25, unit: 'px', when: { path: p('trail') } },
         ]),
       },
-      {
-        title: 'Weather radar',
-        settings: [
-          { path: 'MAP.radar.enabled', label: 'Show radar', type: 'toggle', reload: true },
-          { path: 'MAP.radar.opacity', label: 'Opacity', type: 'range', min: 0.05, max: 1, step: 0.05, when: { path: 'MAP.radar.enabled' } },
-          { path: 'MAP.radar.hideLightEchoes', label: 'Hide light echoes', hint: 'Show only rain and storms', type: 'toggle', reload: true, when: { path: 'MAP.radar.enabled' } },
-        ],
-      },
     ],
   },
   {
@@ -421,10 +413,74 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
           { path: p('trailWidth'), label: 'Width', type: 'range', min: 0.5, max: 5, step: 0.25, unit: 'px', when: { path: p('trail') } },
         ]),
       },
+    ],
+  },
+  {
+    title: 'Weather',
+    groups: [
       {
-        title: 'Weather radar',
+        title: 'Sources',
         settings: [
-          { path: 'MINIMAP.radar.opacity', label: 'Opacity', hint: 'Turned on in 2D Map › Weather radar', type: 'range', min: 0, max: 1, step: 0.05, when: { path: 'MAP.radar.enabled' } },
+          { path: 'MAP.radar.enabled', label: 'Radar', hint: 'Rain, snow and hail reaching the ground (US)', type: 'toggle', reload: true },
+          {
+            path: 'MAP3D.clouds.minDensity',
+            label: 'Hide thin cloud',
+            hint: 'Cloud thinner than this isn’t drawn, on every map. 0: all of it',
+            type: 'range',
+            min: 0,
+            max: 0.9,
+            step: 0.05,
+            scale: 0.01,
+            unit: '%',
+          },
+        ],
+      },
+      {
+        title: '2D map',
+        settings: [
+          { path: 'MAP.clouds.enabled', label: 'Clouds', hint: 'All heights together, seen from above', type: 'toggle' },
+          { path: 'MAP.clouds.opacity', label: 'Cloud opacity', type: 'range', min: 0.05, max: 1, step: 0.05, when: { path: 'MAP.clouds.enabled' } },
+          { path: 'MAP.radar.opacity', label: 'Radar opacity', hint: 'Also the 3D map’s ground', type: 'range', min: 0.05, max: 1, step: 0.05, when: { path: 'MAP.radar.enabled' } },
+        ],
+      },
+      {
+        title: 'Minimap',
+        settings: [
+          { path: 'MINIMAP.clouds.opacity', label: 'Cloud opacity', hint: 'With 2D map clouds on', type: 'range', min: 0, max: 1, step: 0.05, when: { path: 'MAP.clouds.enabled' } },
+          { path: 'MINIMAP.radar.opacity', label: 'Radar opacity', type: 'range', min: 0, max: 1, step: 0.05, when: { path: 'MAP.radar.enabled' } },
+        ],
+      },
+      {
+        title: '3D map',
+        settings: [
+          { path: 'MAP3D.clouds.enabled', label: 'Clouds', hint: 'At their heights, with their thickness', type: 'toggle' },
+          { path: 'MAP3D.clouds.opacity', label: 'Cloud opacity', type: 'range', min: 0.05, max: 1, step: 0.05, when: { path: 'MAP3D.clouds.enabled' } },
+          { path: 'MAP3D.clouds.labels', label: 'Cloud tops', hint: 'How high the satellite sees them over the airport', type: 'toggle', when: { path: 'MAP3D.clouds.enabled' } },
+          { path: 'MAP3D.precipitation.enabled', label: 'Rain and snow', hint: 'Hanging from the clouds where it reaches the ground (needs the radar)', type: 'toggle' },
+          { path: 'MAP3D.precipitation.opacity', label: 'Rain opacity', type: 'range', min: 0.05, max: 1, step: 0.05, when: { path: 'MAP3D.precipitation.enabled' } },
+        ],
+      },
+      {
+        title: 'METAR',
+        settings: [
+          {
+            path: 'METAR.position',
+            label: 'Show',
+            hint: 'Above the board in a row, or top right in a column',
+            type: 'select',
+            options: [
+              { value: 'board', label: 'Board' },
+              { value: 'corner', label: 'Top right' },
+            ],
+          },
+          {
+            path: 'METAR.spotlight',
+            label: 'One reading at a time',
+            hint: 'Each in turn, with its part of the raw report highlighted',
+            type: 'toggle',
+            when: { path: 'METAR.position', is: 'corner' },
+          },
+          { path: 'METAR.spotlightMs', label: 'Each reading for', type: 'range', min: 2000, max: 15_000, step: 1000, ...SECONDS, when: { path: 'METAR.spotlight' } },
         ],
       },
     ],
@@ -533,24 +589,6 @@ export const SETTING_TABS: { title: string; groups: SettingGroup[] }[] = [
               { value: '"B612 Mono", ui-monospace, monospace', label: 'B612' },
             ],
           },
-          {
-            path: 'METAR.position',
-            label: 'Weather (METAR)',
-            hint: 'Above the board in a row, or top right in a column',
-            type: 'select',
-            options: [
-              { value: 'board', label: 'Board' },
-              { value: 'corner', label: 'Top right' },
-            ],
-          },
-          {
-            path: 'METAR.spotlight',
-            label: 'One reading at a time',
-            hint: 'Each in turn, with its part of the raw report highlighted',
-            type: 'toggle',
-            when: { path: 'METAR.position', is: 'corner' },
-          },
-          { path: 'METAR.spotlightMs', label: 'Each reading for', type: 'range', min: 2000, max: 15_000, step: 1000, ...SECONDS, when: { path: 'METAR.spotlight' } },
         ],
       },
       {

@@ -298,16 +298,24 @@ export const MAP = {
 
   /**
    * Weather radar under the aircraft: NOAA MRMS, all NEXRAD radars merged and
-   * quality-controlled. Covers the continental US (and nearby, e.g. Toronto);
-   * elsewhere, such as Frankfurt, there's no radar.
+   * quality-controlled, showing only precipitation reaching the ground (rain by
+   * how hard, snow in blues, hail in pink). Covers the continental US (and
+   * nearby, e.g. Toronto); elsewhere, such as Frankfurt, there's no radar.
    */
   radar: {
     enabled: true,
     /** New MRMS scans arrive about every 2 minutes. */
     refreshMs: 2 * 60_000,
     opacity: 0.25,
-    /** Hide the weakest returns (mostly clutter, birds and drizzle) and show only rain and storms. */
-    hideLightEchoes: true,
+  },
+  /**
+   * Clouds seen from above, over the radar: where the GOES satellite sees them
+   * (continental US and nearby; none elsewhere), all heights together. The 3D
+   * map has its own (MAP3D.clouds), at their heights.
+   */
+  clouds: {
+    enabled: false,
+    opacity: 0.35,
   },
 }
 
@@ -360,6 +368,34 @@ export const MAP3D = {
    */
   trueSizeNearAirport: true,
   trueSizeRangeNm: 15,
+  /**
+   * Cloud layers: where the GOES satellite sees cloud, in five height bands, at
+   * the bases the METARs of the airports around report (aviationweather.gov);
+   * patchier where there's less. See rendering/map3d/clouds.ts.
+   */
+  clouds: {
+    enabled: false,
+    opacity: 0.35,
+    /**
+     * Cloud thinner than this (0–1, 1 being solid) isn't drawn, on any map
+     * (2D, minimap and 3D): 0 draws it all; higher leaves only the thicker cloud.
+     */
+    minDensity: 0,
+    /** How high the satellite sees the cloud tops over the airport, beside it, e.g. "TOPS 17,000 FT" (above sea level). */
+    labels: true,
+  },
+  /**
+   * Rain, snow and hail as translucent curtains hanging from the cloud bases to
+   * the ground wherever the radar (MAP.radar, which has to be on) says it's
+   * reaching the ground, denser the harder it's coming down, and rising into the
+   * cloud as high as showers' and storms' cores reach (MRMS echo tops, ~300 KB
+   * every 4 minutes while on). See rendering/map3d/precip.ts.
+   */
+  precipitation: {
+    enabled: false,
+    /** How opaque the curtains are where it's coming down hardest. */
+    opacity: 0.6,
+  },
 }
 
 // ---- 3D map's minimap ----------------------------------------------------------------
@@ -406,6 +442,8 @@ export const MINIMAP = {
   showCompass: true,
   /** The 2D map's weather radar (when it's on), this opaque; 0 hides it. */
   radar: { opacity: 0.25 },
+  /** The 2D map's clouds (when they're on), this opaque; 0 hides them. */
+  clouds: { opacity: 0.35 },
   showRunwayGuides: true,
   showAssistPaths: false,
 }

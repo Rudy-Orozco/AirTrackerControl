@@ -3,7 +3,7 @@
   "productName": "AirTrackerControl",
   "description": "Live air traffic around an airport: map, 3D views and a split-flap arrivals/departures board.",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "main": "electron/main.mjs",
   "type": "module",
   "scripts": {
@@ -35,6 +35,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "44.4.5",
     "electron-builder": "26.16.1",
+    "jsfive": "^0.4.0",
     "oxlint": "^1.81.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

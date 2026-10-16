@@ -4,9 +4,10 @@ import { defineConfig, type ProxyOptions } from 'vite'
 import { API_ROUTES } from './api-routes.mjs'
 
 // Neither API allows browser requests (no CORS headers), so proxy them.
+// Matched as whole paths (a plain key would match as a prefix: /api/metar would take /api/metar-area).
 const apiProxy: Record<string, ProxyOptions> = Object.fromEntries(
   Object.entries(API_ROUTES).map(([path, route]) => [
-    path,
+    `^${path}(\\?|$)`,
     { target: route.target, changeOrigin: true, rewrite: (p: string) => route.rewrite(p) ?? '/invalid' },
   ]),
 )

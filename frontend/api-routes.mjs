@@ -45,6 +45,16 @@ export const API_ROUTES = {
       return `/api/data/metar?ids=${ids}&format=json&hours=2`
     },
   },
+  // /api/metar-area?south=..&west=..&north=..&east=.. -> reports from every station in the box.
+  '/api/metar-area': {
+    target: 'https://aviationweather.gov',
+    rewrite: (path) => {
+      const params = new URL(path, 'http://localhost').searchParams
+      const box = ['south', 'west', 'north', 'east'].map((k) => Number(params.get(k)))
+      if (!box.every(Number.isFinite)) return null
+      return `/api/data/metar?bbox=${box.map((v) => v.toFixed(3)).join(',')}&format=json&hours=2`
+    },
+  },
   // Callsign -> origin/destination lookups.
   '/api/routeset': {
     target: 'https://adsb.im',

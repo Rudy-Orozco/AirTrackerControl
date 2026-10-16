@@ -73,7 +73,7 @@ export function Minimap({ tracker, ground }: { tracker: Tracker; ground: GroundT
     let width = 0
     let height = 0
     let dpr = 1
-    let layers: MapLayers = { basemap: null, radar: null, terrain: null }
+    let layers: MapLayers = { basemap: null, radar: null, terrain: null, clouds: null, echoTops: null }
     let project = createProjection(createView(1, 1, MINIMAP.radiusNm), CENTER)
     let background: HTMLCanvasElement | null = null
 
@@ -81,7 +81,7 @@ export function Minimap({ tracker, ground }: { tracker: Tracker; ground: GroundT
       if (!width || !height) return
       project = createProjection(createView(width, height, MINIMAP.radiusNm), CENTER)
       background = withMapStyle(MINIMAP, () =>
-        renderBackground(width, height, dpr, createView(width, height, MINIMAP.radiusNm), project, layers.basemap, layers.radar, layers.terrain, false),
+        renderBackground(width, height, dpr, createView(width, height, MINIMAP.radiusNm), project, layers.basemap, layers.radar, layers.terrain, layers.clouds, false),
       )
     }
 
@@ -105,7 +105,7 @@ export function Minimap({ tracker, ground }: { tracker: Tracker; ground: GroundT
     // Labels baked into the background need redrawing once the web font arrives.
     document.fonts.load(withMapStyle(MINIMAP, labelFont)).then(rebuild, () => {})
 
-    // Range, ring spacing, terrain and radar opacity are baked into the background.
+    // Range, ring spacing, terrain, and radar and cloud opacity are baked into the background.
     let builtSettings = settingsVersion()
     let frame = requestAnimationFrame(function loop() {
       if (settingsVersion() !== builtSettings) {
